@@ -1,6 +1,14 @@
 # iris-embedded-python-wrapper
 Embedded Python Wrapper for venv
 
+# Pre-requisites
+
+Set the following environment variables:
+
+```bash
+export IRISINSTALLDIR=/iris/install/dir
+```
+
 # Installation  
 
 ```bash
