@@ -4,7 +4,7 @@ from setuptools import setup
 
 setup(
     name='iris',
-    version='0.0.1',
+    version='0.0.2',
     description='InterSystems IRIS Embedded Python wrapper',
     author='grongier',
     package_dir={'': 'src'},

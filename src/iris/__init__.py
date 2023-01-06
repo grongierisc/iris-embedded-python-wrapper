@@ -10,14 +10,11 @@ if installdir is None:
     Please set IRISINSTALLDIR environment variable to the InterSystems IRIS installation directory""")
 
 # join the install dir with the bin directory
-# add this to the python path
 __syspath.append(os.path.join(installdir, 'bin'))
+# also append lib/python
+__syspath.append(os.path.join(installdir, 'lib', 'python'))
 
 from pythonint import *
-import iris.irisloader
-import iris.irisbuiltins
-
-__syspath.remove(os.path.join(installdir, 'bin'))
 
 # TODO: Figure out how to hide __syspath and __ospath from anyone that
 #       imports iris.  Tried __all__ but that only applies to this:
