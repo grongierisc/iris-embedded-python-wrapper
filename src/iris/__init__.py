@@ -4,7 +4,8 @@ import os
 # check for install dir in environment
 # environment to check is IRISINSTALLDIR
 # if not found, raise exception and exit
-installdir = os.environ.get('IRISINSTALLDIR')
+# ISC_PACKAGE_INSTALLDIR - defined by default in Docker images
+installdir = os.environ.get('IRISINSTALLDIR') or os.environ.get('ISC_PACKAGE_INSTALLDIR')
 if installdir is None:
         raise Exception("""Cannot find InterSystems IRIS installation directory
     Please set IRISINSTALLDIR environment variable to the InterSystems IRIS installation directory""")
