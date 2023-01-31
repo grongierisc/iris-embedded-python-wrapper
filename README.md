@@ -13,5 +13,5 @@ export LD_LIBRARY_PATH=$IRISINSTALLDIR/bin:$LD_LIBRARY_PATH
 # Installation  
 
 ```bash
-pip install https://github.com/grongierisc/iris-embedded-python-wrapper/releases/download/v0.0.2/iris-0.0.2-py3-none-any.whl
+pip install https://github.com/grongierisc/iris-embedded-python-wrapper/releases/download/v0.0.3/iris-0.0.3-py3-none-any.whl
 ```
