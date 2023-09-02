@@ -6,8 +6,10 @@ Embedded Python Wrapper for venv
 Set the following environment variables:
 
 ```bash
-export IRISINSTALLDIR=/iris/install/dir
+export IRISINSTALLDIR=/opt/iris
 export LD_LIBRARY_PATH=$IRISINSTALLDIR/bin:$LD_LIBRARY_PATH
+# for MacOS
+export DYLD_LIBRARY_PATH=$IRISINSTALLDIR/bin:$DYLD_LIBRARY_PATH
 ```
 
 # Installation  
