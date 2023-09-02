@@ -1,5 +1,6 @@
 from sys import path as __syspath
 import os
+import iris_ipm
 
 # check for install dir in environment
 # environment to check is IRISINSTALLDIR
