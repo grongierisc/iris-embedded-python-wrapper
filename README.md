@@ -15,5 +15,5 @@ export DYLD_LIBRARY_PATH=$IRISINSTALLDIR/bin:$DYLD_LIBRARY_PATH
 # Installation  
 
 ```bash
-pip install https://github.com/grongierisc/iris-embedded-python-wrapper/releases/download/v0.0.3/iris-0.0.3-py3-none-any.whl
+pip install https://github.com/grongierisc/iris-embedded-python-wrapper/releases/download/v0.0.4/iris-0.0.4-py3-none-any.whl
 ```
