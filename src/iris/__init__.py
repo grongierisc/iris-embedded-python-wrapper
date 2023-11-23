@@ -1,6 +1,6 @@
 from sys import path as __syspath
 import os
-import iris_ipm
+from .iris_ipm import ipm
 
 # check for install dir in environment
 # environment to check is IRISINSTALLDIR
@@ -16,7 +16,13 @@ __syspath.append(os.path.join(installdir, 'bin'))
 # also append lib/python
 __syspath.append(os.path.join(installdir, 'lib', 'python'))
 
+# save working directory
+__ospath = os.getcwd()
+
 from pythonint import *
+
+# restore working directory
+os.chdir(__ospath)
 
 # TODO: Figure out how to hide __syspath and __ospath from anyone that
 #       imports iris.  Tried __all__ but that only applies to this:
