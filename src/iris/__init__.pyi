@@ -30,7 +30,7 @@ def check_status(status: Any) -> None:
     """
     ...
 
-def cls(className: str) -> Any:
+def cls(class_name: str) -> Any:
     """
     Returns a reference to an InterSystems IRIS class. This allows you access the
     properties and methods of that class in the same way you would a with a Python
@@ -74,7 +74,7 @@ def ref(value: Any) -> Any:
     """
     ...
 
-def routine(routine: str, **kwargs) -> Any:
+def routine(routine_name: str, **kwargs) -> Any:
     """
     Invokes an InterSystems IRIS routine, optionally at a given tag. Any arguments
     that need to be passed in the call are comma-delimited, following the name of
