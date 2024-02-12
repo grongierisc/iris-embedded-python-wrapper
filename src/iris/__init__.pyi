@@ -18,7 +18,7 @@ def execute(self, statements):
     execute IRIS statements.
     Example: iris.execute("set x="Hello"\nw x,!\n") returns nothing.
     """
-def gref(self, global_name):
+def gref(self, global_name) -> global_ref:
     """
     Returns a reference to an InterSystems IRIS global.
     Example: g = iris.gref("^foo") sets g to a reference to global ^foo
@@ -73,6 +73,55 @@ def utils(self):
     Returns a reference to the InterSystems IRIS utilities class.
     Example: iris.utils().$Job() returns the current job number.
     """
+# Stubs for the gref object
+class global_ref:
+    def data(self, key):
+        """
+        Checks if a node of a global contains data and/or has descendants. The key of the node is passed as a list. Passing a key with the
+        value None (or an empty list) indicates the root node of the global.\n
+        You can use data() to inspect a node to see if it contains data before attempting to access that data and possibly encountering an error.
+        The method returns 0 if the node is undefined (contains no data), 1 if the node is defined (contains data), 10 if the node is undefined
+        but has descendants, or 11 if the node is defined and has descendants.
+        """
+    def get(self, key):
+        """
+        Gets the value stored at a node of a global. The key of the node is passed as a list. Passing a key with the value None (or an empty list)
+        indicates the root node of the global.
+        """
+    def getAsBytes(self, key):
+        """
+        Gets a string value stored at a node of a global and converts it to the Python bytes data type. The key of the node is passed as a list.
+        Passing a key with the value None (or an empty list) indicates the root node of the global.
+        """
+    def keys(self, key):
+        """
+        Returns the keys of a global, starting from a given key. The starting key is passed as a list. Passing an empty list indicates the root node of the global.
+        """
+    def kill(self, key):
+        """
+        Deletes the node of a global, if it exists. The key of the node is passed as a list. This also deletes any descendants of the node.
+        Passing a key with the value None (or an empty list) indicates the root node of the global.
+        """
+    def order(self, key):
+        """
+        Returns the next key in that level of the global, starting from a given key. The starting key is passed as a list.
+        If no key follows the starting key, order() returns None.
+        """
+    def orderiter(self, key):
+        """
+        Returns the keys and values of a global, starting from a given key, down to the next leaf node.
+        The starting key is passed as a list. Passing an empty list indicates the root node of the global.
+        """
+    def query(self, key):
+        """
+        Traverses a global starting at the specified key, returning each key and value.
+        The starting key is passed as a list. Passing an empty list indicates the root node of the global.
+        """
+    def set(self, key, value):
+        """
+        Sets a node in a global to a given value. The key of the node is passed as a list, and value is the value to be stored.
+        Passing a key with the value None (or an empty list) indicates the root node of the global.
+        """
 # stubs for the sql object
 class sql:
     """
