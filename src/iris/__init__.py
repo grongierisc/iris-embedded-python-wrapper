@@ -31,3 +31,30 @@ os.chdir(__ospath)
 #
 # End-of-file
 #
+
+def __getattr__(name):
+    try:
+        return globals()[name]
+    except KeyError:
+        return __get_iris_object__(name)
+ 
+def __get_iris_object__(name:str):
+    try:
+        # replace '_' with '%'
+        name = name.replace('_', '%')
+        return cls(name)
+    except RuntimeError:
+        return __get_iris_package__(name)
+ 
+def __get_iris_package__(name:str):
+    return IrisPackage(name)
+ 
+class IrisPackage:
+    def __init__(self, name:str):
+        self.name = name
+ 
+    def __getattr__(self, name):
+        try:
+            return globals()[f"{self.name}.{name}"]
+        except KeyError:
+            return __get_iris_object__(f"{self.name}.{name}")
