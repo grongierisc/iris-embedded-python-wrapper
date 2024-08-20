@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+
+[project]
+name = "iris-embedded-python-wrapper"
+version = "0.0.6"
+description = "Wrapper for embedded python on InterSystems IRIS"
+readme = "README.md"
+authors = [
+    { name = "grongier", email = "guillaume.rongier@intersystems.com" },
+]
+keywords = ["iris", "intersystems", "python", "embedded"]
+requires-python = ">= 3.8"
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Utilities"
+]
+
+license = { file = "LICENSE" }
+
+[project.urls]
+homepage = "https://github.com/grongierisc/iris-embedded-python-wrapper"
+documentation = "https://github.com/grongierisc/iris-embedded-python-wrapper/blob/master/README.md"
+repository = "https://github.com/grongierisc/iris-embedded-python-wrapper"
+issues = "https://github.com/grongierisc/iris-embedded-python-wrapper/issues"
+
+[tool.setuptools.packages.find]
+include = ["iris"]
+
+[tool.setuptools.package-data]
+"*" = ["*"]
+
+[project.scripts]
+bind = "iris._cli:bind"
+unbind = "iris._cli:unbind"

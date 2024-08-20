@@ -1,6 +1,7 @@
 from sys import path as __syspath
 import os
 from .iris_ipm import ipm
+from .iris_utils import update_dynalib_path
 
 # check for install dir in environment
 # environment to check is IRISINSTALLDIR
@@ -15,6 +16,9 @@ if installdir is None:
 __syspath.append(os.path.join(installdir, 'bin'))
 # also append lib/python
 __syspath.append(os.path.join(installdir, 'lib', 'python'))
+
+# update the dynalib path
+update_dynalib_path(os.path.join(installdir, 'bin'))
 
 # save working directory
 __ospath = os.getcwd()
