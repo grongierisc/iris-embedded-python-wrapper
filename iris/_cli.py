@@ -11,6 +11,7 @@ def bind():
     parser.add_argument("--namespace", default="")
 
     args = parser.parse_args()
+    path = ""
 
     libpython = iris_utils.find_libpython()
     if not libpython:
@@ -21,9 +22,13 @@ def bind():
 
     # Set the new libpython path
     config.PythonRuntimeLibrary = libpython
-    # Set the new PythonPath to VIRTUAL_ENV + "/lib" + "/python+" + sys.version[:4] + "/site-packages
-    config.PythonPath = os.path.join(os.environ["VIRTUAL_ENV"], "lib", "python" + sys.version[:4], "site-packages")
 
+    if "VIRTUAL_ENV" in os.environ:
+        # we are not in a virtual environment
+        path = os.path.join(os.environ["VIRTUAL_ENV"], "lib", "python" + sys.version[:4], "site-packages")
+
+    config.PythonPath = path
+    
     config._Save()
 
 def unbind():
