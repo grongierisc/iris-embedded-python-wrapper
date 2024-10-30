@@ -1,5 +1,7 @@
-from sys import path as __syspath
 import os
+import sys
+import importlib
+
 from .iris_ipm import ipm
 from .iris_utils import update_dynalib_path
 
@@ -12,6 +14,10 @@ if installdir is None:
         raise Exception("""Cannot find InterSystems IRIS installation directory
     Please set IRISINSTALLDIR environment variable to the InterSystems IRIS installation directory""")
 
+__sysversion_info = sys.version_info
+__syspath = sys.path
+__osname = os.name
+
 # join the install dir with the bin directory
 __syspath.append(os.path.join(installdir, 'bin'))
 # also append lib/python
@@ -23,7 +29,26 @@ update_dynalib_path(os.path.join(installdir, 'bin'))
 # save working directory
 __ospath = os.getcwd()
 
-from pythonint import *
+__irispythonint = None
+
+if __osname=='nt':
+    if __sysversion_info.minor==9:
+        __irispythonint = 'pythonint39'
+    elif __sysversion_info.minor==10:
+        __irispythonint = 'pythonint310'
+    elif __sysversion_info.minor==11:
+        __irispythonint = 'pythonint311'
+    elif __sysversion_info.minor==12:
+        __irispythonint = 'pythonint312'
+    elif __sysversion_info.minor==13:
+        __irispythonint = 'pythonint313'
+else:
+    __irispythonint = 'pythonint'
+
+if __irispythonint is not None:
+    # equivalent to from pythonint import *
+    __irispythonint = importlib.import_module(__irispythonint)
+    globals().update(vars(__irispythonint))
 
 # restore working directory
 os.chdir(__ospath)
