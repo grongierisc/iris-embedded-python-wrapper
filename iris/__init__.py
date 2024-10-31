@@ -47,8 +47,12 @@ else:
 
 if __irispythonint is not None:
     # equivalent to from pythonint import *
-    __irispythonint = importlib.import_module(__irispythonint)
-    globals().update(vars(__irispythonint))
+    try:
+        __irispythonintmodule = importlib.import_module(__irispythonint)
+    except ImportError:
+        __irispythonint = 'pythonint'
+        __irispythonintmodule = importlib.import_module(__irispythonint)
+    globals().update(vars(__irispythonintmodule))
 
 # restore working directory
 os.chdir(__ospath)
