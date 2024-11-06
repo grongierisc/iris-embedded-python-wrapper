@@ -328,11 +328,11 @@ def update_iris_cpf(libpython, path):
     python_runtime_library_version = None
 
     for i, line in enumerate(lines[config_section:]):
-        if "PythonRuntimeLibrary" in line:
+        if "PythonRuntimeLibrary" in line and python_runtime_library is not None:
             python_runtime_library = i + config_section
-        if "PythonPath" in line:
+        if "PythonPath" in line and python_path is not None:
             python_path = i + config_section
-        if "PythonRuntimeLibraryVersion" in line:
+        if "PythonRuntimeLibraryVersion" in line and python_runtime_library_version is not None:
             python_runtime_library_version = i + config_section
 
     if python_runtime_library is None:
@@ -351,7 +351,7 @@ def update_iris_cpf(libpython, path):
     lines[python_runtime_library] = f"PythonRuntimeLibrary={libpython}\n"
     lines[python_path] = f"PythonPath={path}\n"
     if python_runtime_library_version is not None:
-        lines[python_runtime_library_version] = f"PythonRuntimeLibraryVersion={sys.version[:3]}\n"
+        lines[python_runtime_library_version] = f"PythonRuntimeLibraryVersion={sys.version[:4]}\n"
 
     # write the changes back to the iris.cpf file
     with open(iris_cpf, "w") as f:
