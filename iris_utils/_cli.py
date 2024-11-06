@@ -1,18 +1,18 @@
 from __future__ import print_function, absolute_import
 
+# Standard library imports
 import os
-import shutil
 import sys
-import argparse
-import logging
-logging.basicConfig(level=logging.INFO)
-
+import shutil
 import hashlib
-
-import ctypes.util
+import logging
+import argparse
 import functools
 import sysconfig
+import ctypes.util
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 is_windows = os.name == "nt"
@@ -292,126 +292,210 @@ def find_libpython():
     """
     for path in finding_libpython():
         return os.path.realpath(path)
+    
+
+def _write_cpf_content(filename, lines):
+    """Helper function to write CPF file content"""
+    with open(filename, "w") as f:
+        f.writelines(lines)
+    
+def _get_config_section(lines):
+    """Find or create config section in CPF file"""
+    config_section = next((i for i, line in enumerate(lines) 
+                            if "[config]" in line.lower()), None)
+    if config_section is None:
+        lines.append("[config]\n")
+        config_section = len(lines) - 1
+    return config_section
+
+def _get_python_config(libpython, path, libpythonversion=sys.version[:4]):
+    """Get Python configuration lines"""
+    return {
+        'runtime': f"PythonRuntimeLibrary={libpython}\n",
+        'path': f"PythonPath={path}\n", 
+        'version': f"PythonRuntimeLibraryVersion={libpythonversion}\n"
+    }
+
+def _update_existing_config(lines, config_section, config):
+    """Update existing configuration section"""
+    config_keys = {}
+    for i, line in enumerate(lines[config_section:]):
+        if line.startswith("PythonRuntimeLibrary="):
+            config_keys['runtime'] = i + config_section
+        elif line.startswith("PythonPath="):
+            config_keys['path'] = i + config_section
+        elif line.startswith("PythonRuntimeLibraryVersion="):
+            config_keys['version'] = i + config_section
+
+    # Validate required keys
+    required_keys = ['runtime', 'path'] 
+    missing = [k for k in required_keys if k not in config_keys]
+    if missing:
+        raise RuntimeError(f"Missing required keys: {', '.join(missing)}")
+
+    # Update values
+    lines[config_keys['runtime']] = config['runtime']
+    lines[config_keys['path']] = config['path']
+    if 'version' in config_keys:
+        lines[config_keys['version']] = config['version']
 
 def update_iris_cpf(libpython, path):
-    
-    # try to find the iris.cpf file
-    installdir = os.environ.get('IRISINSTALLDIR') or os.environ.get('ISC_PACKAGE_INSTALLDIR')
-    if installdir is None:
-            raise EnvironmentError("""Cannot find InterSystems IRIS installation directory
-        Please set IRISINSTALLDIR environment variable to the InterSystems IRIS installation directory""")
+    """Update main IRIS CPF file"""
+    installdir = _find_iris_install_dir()
+
     iris_cpf = os.path.join(installdir, "iris.cpf")
-
     if not os.path.exists(iris_cpf):
-        logging.error("iris.cpf not found")
-        raise RuntimeError("iris.cpf not found")
-    
-    # open iris.cpf it's an ini file
-    with open(iris_cpf, "r") as f:
-        lines = f.readlines()
+        raise RuntimeError(f"Configuration file not found: {iris_cpf}")
 
-    # find the [config] section
-    config_section = None
+    try:
+        with open(iris_cpf, "r") as f:
+            lines = f.readlines()
 
-    for i, line in enumerate(lines):
-        if "[config]" in line:
-            config_section = i
-            break
+        config_section = _get_config_section(lines)
+        config = _get_python_config(libpython, path)
+        _update_existing_config(lines, config_section, config)
+        _write_cpf_content(iris_cpf, lines)
 
-    if config_section is None:
-        logging.error("[config] section not found")
-        raise RuntimeError("[config] section not found")
-    
-    # find the PythonRuntimeLibrary and PythonPath keys
-    python_runtime_library = None
-    python_path = None
-    python_runtime_library_version = None
+        logger.info("Successfully updated iris.cpf configuration")
+        log_config_changes(libpython, path)
+        logger.warning("Please restart IRIS instance to apply changes")
 
-    for i, line in enumerate(lines[config_section:]):
-        if line.startswith("PythonRuntimeLibrary=") and python_runtime_library is None:
-            python_runtime_library = i + config_section
-        if  line.startswith("PythonPath=") and python_path is None:
-            python_path = i + config_section
-        if line.startswith("PythonRuntimeLibraryVersion=") and python_runtime_library_version is None:
-            python_runtime_library_version = i + config_section
+    except Exception as e:
+        logger.error(f"Failed to update iris.cpf: {str(e)}")
+        raise
 
-    if python_runtime_library is None:
-        logging.error("PythonRuntimeLibrary key not found")
-        raise RuntimeError("PythonRuntimeLibrary key not found")
-    
-    if python_path is None:
-        logging.error("PythonPath key not found")
-        raise RuntimeError("PythonPath key not found")
-    
-    # backup the current values by copying the iris.cpf file
-    iris_cpf_backup = iris_cpf + hashlib.md5(path.encode()).hexdigest()
-    shutil.copy(iris_cpf, iris_cpf_backup)
+def update_merge_iris_cpf(libpython, path, libpythonversion=sys.version[:4]):
+    """Update merge CPF file"""
+    merge_cpf_file = os.environ.get('ISC_CPF_MERGE_FILE')
+    if not merge_cpf_file:
+        return _create_new_merge_file(libpython, path)
 
-    # update the values
-    lines[python_runtime_library] = f"PythonRuntimeLibrary={libpython}\n"
-    lines[python_path] = f"PythonPath={path}\n"
-    if python_runtime_library_version is not None:
-        lines[python_runtime_library_version] = f"PythonRuntimeLibraryVersion={sys.version[:4]}\n"
+    try:
+        with open(merge_cpf_file, "r") as f:
+            lines = f.readlines()
 
-    # write the changes back to the iris.cpf file
-    with open(iris_cpf, "w") as f:
-        f.writelines(lines)
+        config_section = _get_config_section(lines)
+        config = _get_python_config(libpython, path, libpythonversion)
+        
+        if config_section == len(lines) - 1:  # New section was added
+            lines.extend([config['runtime'], config['path'], config['version']])
+        else:
+            _update_existing_config(lines, config_section, config)
+            
+        _write_cpf_content(merge_cpf_file, lines)
+        logger.info(f"Successfully updated {merge_cpf_file}")
+        log_config_changes(libpython, path)
 
+    except Exception as e:
+        logger.error(f"Failed to update merge file: {str(e)}")
+        raise
+
+def _create_new_merge_file(libpython, path):
+    """Create new merge CPF file"""
+    installdir = _find_iris_install_dir()
+
+    iris_cpf = os.path.join(installdir, "iris_python_merge.cpf")
+    config = _get_python_config(libpython, path)
+
+    try:
+        with open(iris_cpf, "w") as f:
+            f.write("[config]\n")
+            f.writelines([config['runtime'], config['path'], config['version']])
+
+        iris_instance = find_iris_instance(installdir)
+        if iris_instance:
+            os.system(f"iris merge {iris_instance} {iris_cpf}")
+            logger.info(f"Successfully merged with instance: {iris_instance}")
+            log_config_changes(libpython, path)
+        else:
+            logger.error("Failed to find IRIS instance")
+
+    except Exception as e:
+        logger.error(f"Failed to create merge file: {str(e)}")
+        raise
+
+def _find_iris_install_dir():
+    """Find IRIS installation directory"""
+    installdir = os.environ.get('IRISINSTALLDIR') or os.environ.get('ISC_PACKAGE_INSTALLDIR')
+    if not installdir:
+        raise EnvironmentError("IRISINSTALLDIR environment variable must be set")
+    return installdir
+
+def _make_a_backup(iris_cpf, path):
+    """Create a backup of iris.cpf file"""
+    backup_suffix = hashlib.md5(path.encode()).hexdigest()
+    backup_file = f"{iris_cpf}.{backup_suffix}"
+    shutil.copy2(iris_cpf, backup_file)
+    logger.info(f"Created backup at {backup_file}")
+    return backup_file
+
+def find_iris_instance(installdir):
+    """Find IRIS instance from iris all command"""
+    iris_all = os.popen("iris all").read()
+    for line in iris_all.split("\n"):
+        if installdir in line:
+            return line.split(">")[1].split()[0]
+    return None
 
 def bind():
     parser = argparse.ArgumentParser()
     parser.add_argument("--namespace", default="")
     args = parser.parse_args()
 
-    path = ""
-
     libpython = find_libpython()
     if not libpython:
-        logging.error("libpython not found")
         raise RuntimeError("libpython not found")
     
-    # Set the new libpython path
-    if "VIRTUAL_ENV" in os.environ:
-        # we are not in a virtual environment
-        path = os.path.join(os.environ["VIRTUAL_ENV"], "lib", "python" + sys.version[:4], "site-packages")
+    path = _get_path()
 
-    update_iris_cpf(libpython, path)
-
-    log_config_changes(libpython, path)
-
-def unbind():
-
-    # try to find the iris.cpf file
-    installdir = os.environ.get('IRISINSTALLDIR') or os.environ.get('ISC_PACKAGE_INSTALLDIR')
-    if installdir is None:
-            raise EnvironmentError("""Cannot find InterSystems IRIS installation directory
-        Please set IRISINSTALLDIR environment variable to the InterSystems IRIS installation directory""")
+    installdir = _find_iris_install_dir()
     iris_cpf = os.path.join(installdir, "iris.cpf")
+    _make_a_backup(iris_cpf, path)
 
-    if not os.path.exists(iris_cpf):
-        logging.error("iris.cpf not found")
-        raise RuntimeError("iris.cpf not found")
-    
-    libpython = ""
-    path = ""
-    # Set the new libpython path
-    if "VIRTUAL_ENV" in os.environ:
-        # we are not in a virtual environment
-        path = os.path.join(os.environ["VIRTUAL_ENV"], "lib", "python" + sys.version[:4], "site-packages")
-
-    # try to find the backup file
-    iris_cpf_backup = iris_cpf + hashlib.md5(path.encode()).hexdigest()
-
-    if not os.path.exists(iris_cpf_backup):
-        # update the current cpf file with the default values
+    if is_windows:
         update_iris_cpf(libpython, path)
     else:
-        # restore the backup
-        shutil.copy(iris_cpf_backup, iris_cpf)
-        os.remove(iris_cpf_backup)
+        update_merge_iris_cpf(libpython, path)
 
-    log_config_changes(libpython, path)
+def unbind():
+    backup_file = _get_backup_file(_get_path())
+    iris_cpf = os.path.join(_find_iris_install_dir(), "iris.cpf")
+    if is_windows:
+        if backup_file:
+            shutil.copy2(backup_file, iris_cpf)
+            logger.info("Successfully restored iris.cpf from backup")
+            logger.warning("Please restart IRIS instance to apply changes")
+        else:
+            logger.warning("Backup file not found")
+    else:
+        libpython = path = libpythonversion = ""
+        if backup_file:
+            with open(backup_file, "r") as f:
+                lines = f.readlines()
+            config_section = _get_config_section(lines)
+
+            libpython = next((line for line in lines[config_section:] if line.startswith("PythonRuntimeLibrary=")), None)
+            path = next((line for line in lines[config_section:] if line.startswith("PythonPath=")), None)
+            libpythonversion = next((line for line in lines[config_section:] if line.startswith("PythonRuntimeLibraryVersion=")), None)
+        else:
+            logger.warning("Backup file not found, using default values")
+
+        update_merge_iris_cpf(libpython, path, libpythonversion)
+
+def _get_path():
+    path = ""
+    if "VIRTUAL_ENV" in os.environ:
+        path = os.path.join(os.environ["VIRTUAL_ENV"], "lib", f"python{sys.version[:4]}", "site-packages")
+    return path
+
+def _get_backup_file(path):
+    """Find the backup file"""
+    iris_cpf = os.path.join(_find_iris_install_dir(), "iris.cpf")
+    backup_suffix = hashlib.md5(path.encode()).hexdigest()
+    backup_file = f"{iris_cpf}.{backup_suffix}"
+    return backup_file if os.path.exists(backup_file) else None
 
 def log_config_changes(libpython, path):
-    logging.info("PythonRuntimeLibrary path set to %s", libpython)
-    logging.info("PythonPath set to %s", path)
+    """Log configuration changes"""
+    logger.info("PythonRuntimeLibrary path set to %s", libpython)
+    logger.info("PythonPath set to %s", path)
