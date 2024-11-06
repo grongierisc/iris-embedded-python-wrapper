@@ -328,11 +328,11 @@ def update_iris_cpf(libpython, path):
     python_runtime_library_version = None
 
     for i, line in enumerate(lines[config_section:]):
-        if "PythonRuntimeLibrary" in line and python_runtime_library is not None:
+        if line.startswith("PythonRuntimeLibrary=") and python_runtime_library is None:
             python_runtime_library = i + config_section
-        if "PythonPath" in line and python_path is not None:
+        if  line.startswith("PythonPath=") and python_path is None:
             python_path = i + config_section
-        if "PythonRuntimeLibraryVersion" in line and python_runtime_library_version is not None:
+        if line.startswith("PythonRuntimeLibraryVersion=") and python_runtime_library_version is None:
             python_runtime_library_version = i + config_section
 
     if python_runtime_library is None:
