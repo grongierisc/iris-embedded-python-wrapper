@@ -1,6 +1,9 @@
 import os
 import sys
 import importlib
+import logging
+
+logging.basicConfig(level=logging.INFO)
 
 from .iris_ipm import ipm
 from .iris_utils import update_dynalib_path
@@ -11,7 +14,7 @@ from .iris_utils import update_dynalib_path
 # ISC_PACKAGE_INSTALLDIR - defined by default in Docker images
 installdir = os.environ.get('IRISINSTALLDIR') or os.environ.get('ISC_PACKAGE_INSTALLDIR')
 if installdir is None:
-        raise Exception("""Cannot find InterSystems IRIS installation directory
+        raise EnvironmentError("""Cannot find InterSystems IRIS installation directory
     Please set IRISINSTALLDIR environment variable to the InterSystems IRIS installation directory""")
 
 __sysversion_info = sys.version_info
@@ -46,21 +49,19 @@ else:
     __irispythonint = 'pythonint'
 
 if __irispythonint is not None:
-    # equivalent to from pythonint import *
     try:
-        __irispythonintmodule = importlib.import_module(__irispythonint)
-    except ImportError:
-        __irispythonint = 'pythonint'
-        __irispythonintmodule = importlib.import_module(__irispythonint)
-    globals().update(vars(__irispythonintmodule))
+    # try to import the pythonint module
+        try:
+            __iris_module = importlib.import_module(name=__irispythonint)
+        except ModuleNotFoundError:
+            __irispythonint = 'pythonint'
+            __iris_module = importlib.import_module(name=__irispythonint)
+        globals().update(__iris_module.__dict__)
+    except ImportError as e:
+        logging.warning("Error importing %s: %s", __irispythonint, e)
+        logging.warning("Embedded Python not available")
+    
 
 # restore working directory
 os.chdir(__ospath)
 
-# TODO: Figure out how to hide __syspath and __ospath from anyone that
-#       imports iris.  Tried __all__ but that only applies to this:
-#           from iris import *
-
-#
-# End-of-file
-#
