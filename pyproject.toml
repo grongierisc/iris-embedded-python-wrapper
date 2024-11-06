@@ -3,7 +3,7 @@ requires = ["setuptools", "wheel"]
 
 [project]
 name = "iris-embedded-python-wrapper"
-version = "0.0.10"
+version = "0.1.0"
 description = "Wrapper for embedded python on InterSystems IRIS"
 readme = "README.md"
 authors = [
@@ -31,11 +31,11 @@ repository = "https://github.com/grongierisc/iris-embedded-python-wrapper"
 issues = "https://github.com/grongierisc/iris-embedded-python-wrapper/issues"
 
 [tool.setuptools.packages.find]
-include = ["iris"]
+include = ["iris", iris_utils"]
 
 [tool.setuptools.package-data]
 "*" = ["*"]
 
 [project.scripts]
-bind = "iris._cli:bind"
-unbind = "iris._cli:unbind"
+bind = "iris_utils._cli:bind"
+unbind = "iris_utils._cli:unbind"

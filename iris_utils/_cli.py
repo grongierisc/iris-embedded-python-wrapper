@@ -5,15 +5,15 @@ import shutil
 import sys
 import argparse
 import logging
+logging.basicConfig(level=logging.INFO)
 
 import hashlib
 
-from logging import getLogger
 import ctypes.util
 import functools
 import sysconfig
 
-logger = getLogger("find_libpython")
+logger = logging.getLogger(__name__)
 
 is_windows = os.name == "nt"
 is_apple = sys.platform == "darwin"
