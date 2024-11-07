@@ -29,7 +29,7 @@ class PythonConfig:
             'runtime': f"PythonRuntimeLibrary={self.runtime}\n",
             'path': f"PythonPath={self.path}\n"
         }
-        if self.version:
+        if self.version is not None:
             config['version'] = f"PythonRuntimeLibraryVersion={self.version}\n"
         return config
     
@@ -38,7 +38,7 @@ class PythonConfig:
             'runtime': f"ModifyConfig:PythonRuntimeLibrary={self.runtime}\n",
             'path': f"ModifyConfig:PythonPath={self.path}\n"
         }
-        if self.version:
+        if self.version is not None:
             config['version'] =  f"ModifyConfig:PythonRuntimeLibraryVersion={self.version}\n"
         return config
 
