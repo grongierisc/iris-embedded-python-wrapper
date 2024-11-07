@@ -248,7 +248,7 @@ class IrisConfigManager:
     def _log_changes(self, config: PythonConfig):
         logger.info("PythonRuntimeLibrary path set to %s", config.runtime)
         logger.info("PythonPath set to %s", config.path)
-        if config.version:
+        if config.version is not None:
             logger.info("PythonRuntimeLibraryVersion set to %s", config.version)
 
     ### Backup and restore methods
