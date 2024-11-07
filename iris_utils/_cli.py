@@ -24,7 +24,7 @@ class PythonConfig:
     path: str
     version: Optional[str] = None
 
-    def to_cpf_lines(self) -> Dict[str, str]:
+    def to_config_lines(self) -> Dict[str, str]:
         config = {
             'runtime': f"PythonRuntimeLibrary={self.runtime}\n",
             'path': f"PythonPath={self.path}\n"
@@ -96,10 +96,6 @@ class IrisConfigManager:
             )
         return ""
 
-    def make_backup(self):
-        shutil.copy2(self.cpf_path, self.backup_file)
-        logger.info(f"Created backup at {self.backup_file}")
-
     def update_config(self, libpython: str):
         if self.iris_version.major < 2024:
             raise RuntimeError("IRIS version must be 2024.1 or higher")
@@ -144,16 +140,6 @@ class IrisConfigManager:
             logger.error(f"Failed to update merge file: {str(e)}")
             raise
 
-    @staticmethod
-    def _read_cpf_lines(filename: str) -> List[str]:
-        with open(filename, "r") as f:
-            return f.readlines()
-
-    @staticmethod
-    def _write_cpf_content(filename: str, lines: List[str]):
-        with open(filename, "w") as f:
-            f.writelines(lines)
-
     def _create_new_merge_file(self, config: PythonConfig):
         _merge_file = f"{self.cpf_path}.{self._merge_cpf_suffix}"
         with open(_merge_file, "w") as f:
@@ -170,9 +156,18 @@ class IrisConfigManager:
         action_lines = config.to_action_lines()
         
         if actions_section == len(lines):
-            lines.extend(action_lines)
+            lines.extend(action_lines.values())
         else:
             self._update_existing_actions(lines, actions_section, action_lines)
+
+    def _update_config_section(self, lines: List[str], config: PythonConfig):
+        config_section = self._get_config_section(lines)
+        config_lines = config.to_config_lines()
+        
+        if config_section == len(lines):
+            lines.extend(config_lines.values())
+        else:
+            self._update_existing_config(lines, config_section, config_lines)
 
     @staticmethod
     def _get_actions_section(lines: List[str]) -> int:
@@ -181,34 +176,6 @@ class IrisConfigManager:
                 return i
         lines.append("\n[Actions]\n")
         return len(lines)
-    
-    def _update_existing_actions(self, lines: List[str], actions_section: int, action_lines: Dict[str, str]):
-        action_keys = self._find_action_keys(lines[actions_section:], actions_section)
-        self._validate_config_keys(action_keys)
-        
-        for key, line_num in action_keys.items():
-            if key in action_lines:
-                lines[line_num] = action_lines[key] 
-
-    def _find_action_keys(self, lines: List[str], offset: int) -> Dict[str, int]:
-        keys = {}
-        for i, line in enumerate(lines):
-            if line.startswith("ModifyConfig:PythonRuntimeLibrary="):
-                keys['runtime'] = i + offset
-            elif line.startswith("ModifyConfig:PythonPath="):
-                keys['path'] = i + offset
-            elif line.startswith("ModifyConfig:PythonRuntimeLibraryVersion="):
-                keys['version'] = i + offset
-        return keys
-
-    def _update_config_section(self, lines: List[str], config: PythonConfig):
-        config_section = self._get_config_section(lines)
-        config_lines = config.to_cpf_lines()
-        
-        if config_section == len(lines):
-            lines.extend(config_lines.values())
-        else:
-            self._update_existing_config(lines, config_section, config_lines)
 
     @staticmethod
     def _get_config_section(lines: List[str]) -> int:
@@ -226,6 +193,28 @@ class IrisConfigManager:
             if key in config:
                 lines[line_num] = config[key]
 
+    def _update_existing_actions(self, lines: List[str], actions_section: int, action_lines: Dict[str, str]):
+        action_keys = self._find_action_keys(lines[actions_section:], actions_section)
+
+        offset = 0
+        for key, value in action_lines.items():
+            if key in action_keys:
+                lines[action_keys[key]+offset] = value
+            else:
+                lines.insert(actions_section+1, value)
+                offset += 1
+
+    def _find_action_keys(self, lines: List[str], offset: int) -> Dict[str, int]:
+        keys = {}
+        for i, line in enumerate(lines):
+            if line.startswith("ModifyConfig:PythonRuntimeLibrary="):
+                keys['runtime'] = i + offset
+            elif line.startswith("ModifyConfig:PythonPath="):
+                keys['path'] = i + offset
+            elif line.startswith("ModifyConfig:PythonRuntimeLibraryVersion="):
+                keys['version'] = i + offset
+        return keys
+
     def _find_config_keys(self, lines: List[str], offset: int) -> Dict[str, int]:
         keys = {}
         for i, line in enumerate(lines):
@@ -237,7 +226,7 @@ class IrisConfigManager:
                 keys['version'] = i + offset
         return keys
     
-    def _get_config_keys_values(self, lines: List[str], offset: int) -> Dict[str, str]:
+    def _get_config_keys_values(self, lines: List[str]) -> Dict[str, str]:
         keys = {}
         for i, line in enumerate(lines):
             if line.startswith("PythonRuntimeLibrary="):
@@ -263,10 +252,28 @@ class IrisConfigManager:
         if config.version:
             logger.info("PythonRuntimeLibraryVersion set to %s", config.version)
 
+    ### Backup and restore methods
+
+    def make_backup(self):
+        shutil.copy2(self.cpf_path, self.backup_file)
+        logger.info(f"Created backup at {self.backup_file}")
+
     def get_backup_file(self) -> Optional[str]:
         if os.path.exists(self.backup_file):
             return self.backup_file
         return None
+    
+    ### File I/O methods
+
+    @staticmethod
+    def _read_cpf_lines(filename: str) -> List[str]:
+        with open(filename, "r") as f:
+            return f.readlines()
+
+    @staticmethod
+    def _write_cpf_content(filename: str, lines: List[str]):
+        with open(filename, "w") as f:
+            f.writelines(lines)
 
 def bind():
     parser = argparse.ArgumentParser()
@@ -291,7 +298,16 @@ def unbind():
             config = PythonConfig("", "", "")
             with open(backup_file, "r") as f:
                 lines = f.readlines()
-                config = config_manager._get_config_keys_values(lines, 0)
+                config_dict = config_manager._get_config_keys_values(lines)
+                config.runtime = config_dict.get('runtime', "")
+                config.path = config_dict.get('path', "")
+                config.version = config_dict.get('version', "")
+
             config_manager.update_merge_cpf(config)
     else:
         logger.warning("Backup file not found")
+        config = PythonConfig("", "", "")
+        if is_windows:
+            config_manager.update_iris_cpf(config)
+        else:
+            config_manager.update_merge_cpf(config)

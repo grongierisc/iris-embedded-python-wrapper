@@ -1,7 +1,7 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 import pytest
-from iris_utils._cli import IrisConfigManager, IrisVersion
+from iris_utils._cli import IrisConfigManager, IrisVersion, unbind, bind
 
 @pytest.fixture
 def mock_env(monkeypatch, tmp_path):
@@ -15,6 +15,14 @@ PythonRuntimeLibrary=/path/to/python
 PythonPath=/path/to/site-packages
 """
     cpf_path.write_text(test_cpf)
+
+    merge_cpf = iris_dir / "merge.cpf"
+    merge_cpf.write_text("[Actions]\n")
+
+    merge_with_settings = iris_dir / "merge_with_settings.cpf"
+    merge_with_settings.write_text("""[Actions]
+ModifyConfig:PythonPath=tot
+""")
     
     monkeypatch.setenv("IRISINSTALLDIR", str(iris_dir))
     monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "venv"))
@@ -54,7 +62,7 @@ def test_update_config_windows(mock_env, monkeypatch):
         assert f"PythonRuntimeLibrary={test_lib}" in content
         assert "PythonPath=" in content
 
-def test_update_config_linux(mock_env, monkeypatch):
+def test_create_config_linux(mock_env, monkeypatch):
     monkeypatch.setattr("iris_utils._cli.is_windows", False)
 
     manager = IrisConfigManager()
@@ -71,6 +79,23 @@ def test_update_config_linux(mock_env, monkeypatch):
         assert f"ModifyConfig:PythonRuntimeLibrary={test_lib}" in lines
         assert "ModifyConfig:PythonPath=" in lines
 
+def test_update_config_linux(mock_env, monkeypatch):
+    monkeypatch.setattr("iris_utils._cli.is_windows", False)
+    monkeypatch.setenv("ISC_CPF_MERGE_FILE", mock_env / "merge_with_settings.cpf")
+
+    manager = IrisConfigManager()
+    manager._get_iris_instance_name = MagicMock(return_value="IRIS")
+    test_lib = "/test/libpython.so"
+    
+    manager.update_config(test_lib)
+    
+    # open the merged cpf file
+    _merge_file = Path(mock_env / "merge_with_settings.cpf")
+    with open(_merge_file, "r") as f:
+        lines = f.read()
+        assert "[Actions]\n" in lines
+        assert f"ModifyConfig:PythonRuntimeLibrary={test_lib}" in lines
+        assert "ModifyConfig:PythonPath=" in lines
 
 def test_old_iris_version(mock_env):
     with open(mock_env / "iris.cpf", "w") as f:
