@@ -89,7 +89,7 @@ class IrisConfigManager:
     def _get_python_path() -> str:
         if "VIRTUAL_ENV" in os.environ:
             return os.path.join(
-                os.environ["VIRTUAL_ENV"], 
+                os.environ["VIRTUAL_ENV"],
                 "lib", 
                 f"python{sys.version[:4]}", 
                 "site-packages"
@@ -224,10 +224,10 @@ class IrisConfigManager:
             elif line.startswith("PythonRuntimeLibraryVersion="):
                 keys['version'] = i + offset
         return keys
-    
+
     def _get_config_keys_values(self, lines: List[str]) -> Dict[str, str]:
         keys = {}
-        for i, line in enumerate(lines):
+        for _, line in enumerate(lines):
             if line.startswith("PythonRuntimeLibrary="):
                 keys['runtime'] = line.split("=")[1].strip()
             elif line.startswith("PythonPath="):
@@ -240,7 +240,7 @@ class IrisConfigManager:
         required_keys = ['runtime', 'path']
         if self.iris_version.requires_python_version:
             required_keys.append('version')
-            
+
         missing = [k for k in required_keys if k not in config_keys]
         if missing:
             raise RuntimeError(f"Missing required keys: {', '.join(missing)}")
@@ -294,18 +294,22 @@ def unbind():
             logger.info("Successfully restored iris.cpf from backup")
             logger.warning("Please restart IRIS instance to apply changes")
         else:
-            config = PythonConfig("", "", "")
+            config = PythonConfig("", "")
             with open(backup_file, "r") as f:
                 lines = f.readlines()
                 config_dict = config_manager._get_config_keys_values(lines)
                 config.runtime = config_dict.get('runtime', "")
                 config.path = config_dict.get('path', "")
-                config.version = config_dict.get('version', "")
+                if config_manager.iris_version.requires_python_version:
+                    config.version = config_dict.get('version', "")
 
             config_manager.update_merge_cpf(config)
     else:
         logger.warning("Backup file not found")
-        config = PythonConfig("", "", "")
+        if config_manager.iris_version.requires_python_version:
+            config = PythonConfig("", "", "")
+        else:
+            config = PythonConfig("", "")
         if is_windows:
             config_manager.update_iris_cpf(config)
         else:
