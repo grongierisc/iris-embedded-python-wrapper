@@ -126,19 +126,18 @@ class IrisConfigManager:
 
     def update_merge_cpf(self, config: PythonConfig):
         merge_file = os.environ.get('ISC_CPF_MERGE_FILE')
-        if not merge_file:
-            self._create_new_merge_file(config)
-            self._merge_cpf_to_iris()
-            return
-
         try:
-            lines = self._read_cpf_lines(merge_file)
-            self._update_actions_section(lines, config)
-            self._write_cpf_content(merge_file, lines)
-            self._log_changes(config)
+            if not merge_file:
+                self._create_new_merge_file(config)
+                self._merge_cpf_to_iris()
+            else:
+                lines = self._read_cpf_lines(merge_file)
+                self._update_actions_section(lines, config)
+                self._write_cpf_content(merge_file, lines)
         except Exception as e:
             logger.error(f"Failed to update merge file: {str(e)}")
             raise
+        self._log_changes(config)
 
     def _create_new_merge_file(self, config: PythonConfig):
         _merge_file = f"{self.cpf_path}.{self._merge_cpf_suffix}"
