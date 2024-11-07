@@ -31,7 +31,7 @@ repository = "https://github.com/grongierisc/iris-embedded-python-wrapper"
 issues = "https://github.com/grongierisc/iris-embedded-python-wrapper/issues"
 
 [tool.setuptools.packages.find]
-include = ["iris", iris_utils"]
+include = ["iris", "iris_utils"]
 
 [tool.setuptools.package-data]
 "*" = ["*"]
