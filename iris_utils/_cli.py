@@ -63,7 +63,11 @@ class IrisConfigManager:
         iris_all = os.popen("iris all").read()
         for line in iris_all.split("\n"):
             if self.installdir in line:
-                return line.split(">")[1].split()[0]
+                try:
+                    return line.split(">")[1].split()[0]
+                except IndexError:
+                    ## add for IRIS 2024.3 +
+                    return line.split("  ")[1].split()[0]
         raise RuntimeError("Could not determine IRIS instance name")
     
     def _merge_cpf_to_iris(self):
