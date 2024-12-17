@@ -69,24 +69,91 @@
             <div class="section" itemprop="articleBody">
               
                 <h1 id="iris-embedded-python-wrapper">iris-embedded-python-wrapper</h1>
-<p>Embedded Python Wrapper for venv</p>
+<p>This is a module that wraps embedded python in the IRIS Dataplateform. It provides a simple interface to run python code in IRIS.</p>
+<p>More details can be found in the <a href="https://docs.intersystems.com/iris20243/csp/docbook/DocBook.UI.Page.cls?KEY=AFL_epython">IRIS documentation</a></p>
 <h1 id="pre-requisites">Pre-requisites</h1>
-<p>Set the following environment variables:</p>
+<p>To make use of this module, you need to have the IRIS Dataplatform installed on your machine (more details can be found <a href="https://docs.intersystems.com/iris20243/csp/docbook/DocBook.UI.Page.cls?KEY=PAGE_deployment_install">here</a>).</p>
+<p>Then you must configure the <a href="#configuration-of-the-service-callin">service callin</a> to allow the python code to be executed and <a href="#environment-variables">set the environment variables</a>.</p>
+<h2 id="configuration-of-the-service-callin">Configuration of the service callin</h2>
+<p>In the Management Portal, go to System Administration &gt; Security &gt; Services, select %Service_CallIn, and check the Service Enabled box.</p>
+<p>More details can be found in the <a href="https://docs.intersystems.com/iris20243/csp/docbook/DocBook.UI.Page.cls?KEY=GEPYTHON_prereqs">IRIS documentation</a></p>
+<h2 id="environment-variables">Environment Variables</h2>
+<p>Set the following environment variables</p>
+<h3 id="for-linux-and-macos">For Linux and MacOS</h3>
 <pre><code class="language-bash">export IRISINSTALLDIR=/opt/iris
 export LD_LIBRARY_PATH=$IRISINSTALLDIR/bin:$LD_LIBRARY_PATH
 # for MacOS
 export DYLD_LIBRARY_PATH=$IRISINSTALLDIR/bin:$DYLD_LIBRARY_PATH
 </code></pre>
-<p>For windows :</p>
+<h3 id="for-windows">For windows</h3>
 <pre><code class="language-bash">set IRISINSTALLDIR=C:\path\to\iris
 set LD_LIBRARY_PATH=%IRISINSTALLDIR%\bin;%LD_LIBRARY_PATH%
 </code></pre>
 <p>Update the library path for windows</p>
 <pre><code class="language-bash">set PATH=%IRISINSTALLDIR%\bin;%PATH%
 </code></pre>
-<h1 id="installation">Installation</h1>
+<h2 id="installation">Installation</h2>
 <pre><code class="language-bash">pip install iris-embedded-python-wrapper
 </code></pre>
+<h1 id="usage">Usage</h1>
+<p>You can use this module in three ways:</p>
+<ol>
+<li>Run python code in IRIS</li>
+<li>Bind a virtual environment to embedded python in IRIS</li>
+<li>Unbind a virtual environment from embedded python in IRIS</li>
+</ol>
+<h2 id="run-python-code-in-iris">Run python code in IRIS</h2>
+<p>Now you can use the module to run python code in IRIS. Here is an example:</p>
+<pre><code class="language-python">import iris
+iris.system.Version.GetVersion()
+</code></pre>
+<p>Output:</p>
+<pre><code class="language-python">'IRIS for UNIX (Apple Mac OS X for x86-64) 2024.3 (Build 217U) Thu Nov 14 2024 17:29:23 EST'
+</code></pre>
+<h2 id="bind-a-virtual-environment-to-embedded-python-in-iris">Bind a virtual environment to embedded python in IRIS</h2>
+<p>You can also bind or unbind an virtual environment to embedded python in IRIS. Here is an example:</p>
+<pre><code class="language-bash">bind_iris
+</code></pre>
+<p>Output:</p>
+<pre><code class="language-bash">(.venv) demo ‹master*›$ bind_iris
+INFO:iris_utils._find_libpyton:Created backup at /opt/intersystems/iris/iris.cpf.fa76423a7b924eb085911690c8266129
+INFO:iris_utils._find_libpyton:Created merge file at /opt/intersystems/iris/iris.cpf.python_merge
+up  IRIS              2024.3.0.217.0    1972   /opt/intersystems/iris
+
+Username: SuperUser
+Password: ***
+IRIS Merge of /opt/intersystems/iris/iris.cpf.python_merge into /opt/intersystems/iris/iris.cpf
+IRIS Merge completed successfully
+INFO:iris_utils._find_libpyton:PythonRuntimeLibrary path set to /usr/local/Cellar/python@3.11/3.11.10/Frameworks/Python.framework/Versions/3.11/Python
+INFO:iris_utils._find_libpyton:PythonPath set to /demo/.venv/lib/python3.11/site-packages
+INFO:iris_utils._find_libpyton:PythonRuntimeLibraryVersion set to 3.11
+</code></pre>
+<p>You may have to put your admin credentials to bind the virtual environment to the embedded python in IRIS.</p>
+<p>In windows, you must restart the IRIS.</p>
+<h2 id="unbind-a-virtual-environment-from-embedded-python-in-iris">Unbind a virtual environment from embedded python in IRIS</h2>
+<pre><code class="language-bash">unbind_iris
+</code></pre>
+<p>Output:</p>
+<pre><code class="language-bash">(.venv) demo ‹master*›$ unbind_iris
+INFO:iris_utils._find_libpyton:Created merge file at /opt/intersystems/iris/iris.cpf.python_merge
+up  IRIS              2024.3.0.217.0    1972   /opt/intersystems/iris
+
+Username: SuperUser
+Password: ***
+IRIS Merge of /opt/intersystems/iris/iris.cpf.python_merge into /opt/intersystems/iris/iris.cpf
+IRIS Merge completed successfully
+INFO:iris_utils._find_libpyton:PythonRuntimeLibrary path set to /usr/local/Cellar/python@3.11/3.11.10/Frameworks/Python.framework/Versions/3.11/Python
+INFO:iris_utils._find_libpyton:PythonPath set to /Other/.venv/lib/python3.11/site-packages
+INFO:iris_utils._find_libpyton:PythonRuntimeLibraryVersion set to 3.11
+</code></pre>
+<h1 id="troubleshooting">Troubleshooting</h1>
+<p>You may encounter the following error, here is how to fix them.</p>
+<h2 id="no-module-named-pythonint">No module named 'pythonint'</h2>
+<p>This can occur when the environment variable <code>IRISINSTALLDIR</code> is not set correctly. Make sure that the path is correct.</p>
+<h2 id="iris_accessdenied-15">IRIS_ACCESSDENIED (-15)</h2>
+<p>This can occur when the service callin is not enabled. Make sure that the service callin is enabled.</p>
+<h2 id="iris_attach-21">IRIS_ATTACH (-21)</h2>
+<p>This can occur when the user is not the same as the iris owner. Make sure that the user is the same as the iris owner.</p>
               
             </div>
           </div><footer>
@@ -130,5 +197,5 @@ set LD_LIBRARY_PATH=%IRISINSTALLDIR%\bin;%LD_LIBRARY_PATH%
 
 <!--
 MkDocs version : 1.6.1
-Build Date UTC : 2024-12-17 12:41:19.186363+00:00
+Build Date UTC : 2024-12-17 16:30:44.276253+00:00
 -->
