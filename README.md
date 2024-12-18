@@ -18,18 +18,32 @@ More details can be found in the [IRIS documentation](https://docs.intersystems.
 
 ## Environment Variables
 
-Set the following environment variables
+Set the following environment variables :
+
+- IRISINSTALLDIR: The path to the IRIS installation directory
+- LD_LIBRARY_PATH: The path to the IRIS library
+- IRISUSERNAME: The username to connect to IRIS
+- IRISPASSWORD: The password to connect to IRIS
+- IRISNAMESPACE: The namespace to connect to IRIS
 
 ### For Linux and MacOS
+
+For Linux and MacOS, you can set the environment variables as follows:
 
 ```bash
 export IRISINSTALLDIR=/opt/iris
 export LD_LIBRARY_PATH=$IRISINSTALLDIR/bin:$LD_LIBRARY_PATH
 # for MacOS
 export DYLD_LIBRARY_PATH=$IRISINSTALLDIR/bin:$DYLD_LIBRARY_PATH
+# for IRIS username
+export IRISUSERNAME=SuperUser
+export IRISPASSWORD=SYS
+export IRISNAMESPACE=USER
 ```
 
 ### For windows
+
+For windows, you can set the environment variables as follows:
     
 ```bash
 set IRISINSTALLDIR=C:\path\to\iris
@@ -40,6 +54,26 @@ Update the library path for windows
 
 ```bash
 set PATH=%IRISINSTALLDIR%\bin;%PATH%
+```
+
+Set the IRIS username, password, and namespace
+
+```bash
+set IRISUSERNAME=SuperUser
+set IRISPASSWORD=SYS
+set IRISNAMESPACE=USER
+```
+
+### For PowerShell
+
+For PowerShell, you can set the environment variables as follows:
+
+```powershell
+$env:IRISINSTALLDIR="C:\path\to\iris"
+$env:PATH="$env:IRISINSTALLDIR\bin;$env:PATH"
+$env:IRISUSERNAME="SuperUser"
+$env:IRISPASSWORD="SYS"
+$env:IRISNAMESPACE="USER"
 ```
 
 ## Installation  
