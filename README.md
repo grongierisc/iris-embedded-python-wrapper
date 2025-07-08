@@ -171,3 +171,12 @@ This can occur when the service callin is not enabled. Make sure that the servic
 ## IRIS_ATTACH (-21)
 
 This can occur when the user is not the same as the iris owner. Make sure that the user is the same as the iris owner.
+
+## irisbuiltins.SQLError: <UNIMPLEMENTED>ddtab+82^%qaqpsq
+
+This error can occur when the required libraries are not found. You can fix this by copying the necessary libraries to the Python framework directory:
+
+```bash
+cp /opt/intersystems/iris/bin/libicudata.69.dylib /usr/local/Cellar/python@3.11/3.11.13/Frameworks/Python.framework/Versions/3.11/Resources/Python.app/Contents/MacOS/
+cp /opt/intersystems/iris/bin/libicuuc.69.dylib /usr/local/Cellar/python@3.11/3.11.13/Frameworks/Python.framework/Versions/3.11/Resources/Python.app/Contents/MacOS/
+```
