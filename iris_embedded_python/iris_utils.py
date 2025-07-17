@@ -3,12 +3,11 @@ import os
 
 
 def update_dynalib_path(dynalib_path):
-    # set flags to allow dynamic loading of shared libraries
-    sys.setdlopenflags(sys.getdlopenflags() | os.RTLD_GLOBAL)
-
     # Determine the environment variable based on the operating system
     env_var = 'PATH'
     if not sys.platform.startswith('win'):
+        # set flags to allow dynamic loading of shared libraries
+        sys.setdlopenflags(sys.getdlopenflags() | os.RTLD_GLOBAL)
         if sys.platform == 'darwin':
             env_var = 'DYLD_LIBRARY_PATH'
         else:
