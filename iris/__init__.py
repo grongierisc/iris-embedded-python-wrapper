@@ -10,3 +10,9 @@ except ImportError:
 file_name_elsdk = os.path.join(current_dir, "_init_elsdk.py")
 if os.path.exists(file_name_elsdk):
     from iris._init_elsdk import *
+
+# newer versions are on _elsdk only, but we want to support older versions as well, so we try both
+try:
+    from iris._elsdk import *
+except ImportError:
+    pass
