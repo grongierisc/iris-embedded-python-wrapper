@@ -32,42 +32,49 @@ else:
 # save working directory
 __ospath = os.getcwd()
 
-__irispythonint = None
-
-if __osname=='nt':
-    if __sysversion_info.minor==9:
-        __irispythonint = 'pythonint39'
-    elif __sysversion_info.minor==10:
-        __irispythonint = 'pythonint310'
-    elif __sysversion_info.minor==11:
-        __irispythonint = 'pythonint311'
-    elif __sysversion_info.minor==12:
-        __irispythonint = 'pythonint312'
-    elif __sysversion_info.minor==13:
-        __irispythonint = 'pythonint313'
+if bool(getattr(sys, "_embedded", 0)):
+    # python(libpython.so) inside iris
+    from irisep import *
+    from irisep import __getattr__
 else:
-    __irispythonint = 'pythonint'
 
-if __irispythonint is not None:
-    try:
-    # try to import the pythonint module
+    __irispythonint = None
+
+    if __osname=='nt':
+        if __sysversion_info.minor==9:
+            __irispythonint = 'pythonint39'
+        elif __sysversion_info.minor==10:
+            __irispythonint = 'pythonint310'
+        elif __sysversion_info.minor==11:
+            __irispythonint = 'pythonint311'
+        elif __sysversion_info.minor==12:
+            __irispythonint = 'pythonint312'
+        elif __sysversion_info.minor==13:
+            __irispythonint = 'pythonint313'
+        elif __sysversion_info.minor==14:
+            __irispythonint = 'pythonint314'
+    else:
+        __irispythonint = 'pythonint'
+
+    if __irispythonint is not None:
         try:
-            __iris_module = importlib.import_module(name=__irispythonint)
-        except ModuleNotFoundError:
-            __irispythonint = 'pythonint'
-            __iris_module = importlib.import_module(name=__irispythonint)
-        globals().update(__iris_module.__dict__)
-    except ImportError as e:
-        logging.warning("Error importing %s: %s", __irispythonint, e)
-        logging.warning("Embedded Python not available")
-        def __getattr__(name):
-            if name in ['cls', 'sql']:
+        # try to import the pythonint module
+            try:
+                __iris_module = importlib.import_module(name=__irispythonint)
+            except ModuleNotFoundError:
+                __irispythonint = 'pythonint'
+                __iris_module = importlib.import_module(name=__irispythonint)
+            globals().update(__iris_module.__dict__)
+        except ImportError as e:
+            logging.warning("Error importing %s: %s", __irispythonint, e)
+            logging.warning("Embedded Python not available")
+            def __getattr__(name):
+                if name == "__all__":
+                    return []
                 logging.warning(f"Class or module '{name}' not found in iris_embedded_python. Returning a mock object. Make sure you local installation is correct.")
                 from unittest.mock import MagicMock
                 return MagicMock()
-            else:
-                return []
-    
+        
 
 # restore working directory
 os.chdir(__ospath)
