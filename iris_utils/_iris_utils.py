@@ -1,6 +1,18 @@
 import sys
 import os
 
+_active_native_connection = None
+
+def set_active_connection(conn):
+    """
+    Sets the active Native API connection for fallback use when Embedded Python is not available.
+    """
+    global _active_native_connection
+    _active_native_connection = conn
+
+def get_active_connection():
+    return _active_native_connection
+
 
 def update_dynalib_path(dynalib_path):
     # Determine the environment variable based on the operating system
