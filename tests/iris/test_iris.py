@@ -1,35 +1,34 @@
 import iris
-import importlib
 import os
-import logging
-from io import StringIO
+import pytest
 
 def test_import_iris():
     import iris
 
     assert True
 
-def test_import_iris_without_install_dir():
-    os.environ.pop('IRISINSTALLDIR', None)
-    os.environ.pop('ISC_PACKAGE_INSTALLDIR', None)
+def test_runtime_can_be_forced_unavailable_without_install_dir():
+    iris.runtime.configure(mode="auto", install_dir=None)
 
-    try:
-        importlib.reload(iris)
-    except EnvironmentError:
-        assert True
-    else:
-        assert False
+    assert iris.runtime.state == "unavailable"
+    assert iris.runtime.embedded_available is False
 
-def test_import_iris_without_credentials():
-    import os
-    os.environ.pop('IRISUSERNAME', None)
+def test_runtime_native_mode_requires_bound_iris_handle():
+    iris.runtime.reset()
 
-    # caputre logging output
-    log_capture_string = StringIO()
-    ch = logging.StreamHandler(log_capture_string)
-    logging.getLogger().addHandler(ch)
+    with pytest.raises(RuntimeError, match="native mode"):
+        iris.runtime.configure(mode="native")
+        iris.cls("User.Bar")
 
-    import iris
+    iris.runtime.reset()
 
-    assert "Embedded Python not available" in log_capture_string.getvalue()
+
+def test_runtime_embedded_mode_requires_embedded_backend():
+    iris.runtime.reset()
+
+    with pytest.raises(RuntimeError):
+        iris.runtime.configure(mode="embedded", install_dir=None)
+        iris.cls("User.Bar")
+
+    iris.runtime.reset()
 

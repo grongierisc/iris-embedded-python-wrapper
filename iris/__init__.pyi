@@ -6,8 +6,8 @@ from typing import Any, Iterator, List, Optional, Tuple
 from . import iris_ipm
 
 __all__ = [
-    'check_status', 'cls', 'createConnection', 'createIRIS', 'execute', 'gref', 'iris_ipm',
-    'lock', 'os', 'ref', 'routine', 'sql', 'system',
+    'check_status', 'cls', 'createConnection', 'createIRIS', 'dbapi', 'execute', 'gref', 'iris_ipm',
+    'lock', 'os', 'ref', 'routine', 'runtime', 'sql', 'system',
     'tcommit', 'tlevel', 'trollback', 'trollbackone', 'tstart', 'unlock', 'utils',
 ]
 
@@ -26,7 +26,7 @@ class IRISConnection:
 class IRIS:
     """
     The InterSystems IRIS Native API object.
-    Returned by createIRIS(). Pass this to set_active_connection().
+    Returned by createIRIS(). Bind it into iris.runtime when native mode is needed.
     """
     def classMethodValue(self, class_name: str, method_name: str, *args: Any) -> Any:
         """Invoke a class method and return its value."""
@@ -66,8 +66,8 @@ def createConnection(
 def createIRIS(conn: IRISConnection) -> IRIS:
     """
     Create an IRIS Native API object from an open connection.
-    The returned IRIS object should be passed to set_active_connection().
-    Example: db = iris.createIRIS(conn); iris.set_active_connection(db)
+    The returned IRIS object can be bound through iris.runtime.configure(mode="native", iris=db).
+    Example: db = iris.createIRIS(conn); iris.runtime.configure(mode="native", iris=db)
     """
 
 # Module-level functions
@@ -159,19 +159,40 @@ def utils() -> Any:
     Example: iris.utils().$Job() returns the current job number.
     """
 
-# Native API helpers (not in __all__ but publicly accessible as module attributes)
+class RuntimeContext:
+    mode: str
+    state: str
+    install_dir: Optional[str]
+    embedded_available: bool
+    iris: Optional[IRIS]
+    dbapi: Any
+    native_connection: Optional[IRISConnection]
 
-def set_active_connection(conn: IRIS) -> None:
-    """
-    Register an IRIS Native API object (returned by createIRIS()) so that iris.cls() and
-    other wrappers fall back to the Native API when Embedded Python is not available.
-    Example: iris.set_active_connection(iris.createIRIS(conn))
-    """
+class Runtime:
+    @property
+    def state(self) -> str: ...
+    @property
+    def mode(self) -> str: ...
+    @property
+    def embedded_available(self) -> bool: ...
+    @property
+    def iris(self) -> Optional[IRIS]: ...
+    @property
+    def dbapi(self) -> Any: ...
+    @property
+    def native_connection(self) -> Optional[IRISConnection]: ...
+    def get(self) -> RuntimeContext: ...
+    def configure(
+        self,
+        mode: str = ...,
+        install_dir: Optional[str] = ...,
+        iris: Optional[IRIS] = ...,
+        dbapi: Any = ...,
+        native_connection: Optional[IRISConnection] = ...,
+    ) -> RuntimeContext: ...
+    def reset(self) -> RuntimeContext: ...
 
-def get_active_connection() -> Optional[IRIS]:
-    """
-    Returns the currently registered IRIS Native API object, or None if not set.
-    """
+runtime: Runtime
 
 # By-reference container
 
@@ -256,6 +277,40 @@ class _SQL:
         """Prepare a SQL query for repeated or parameterised execution."""
 
 sql: _SQL
+
+class _DBAPICursor:
+    arraysize: int
+    description: Any
+    rowcount: int
+    def execute(self, operation: str, params: Optional[Any] = ...) -> _DBAPICursor: ...
+    def fetchone(self) -> Optional[Any]: ...
+    def fetchmany(self, size: Optional[int] = ...) -> List[Any]: ...
+    def fetchall(self) -> List[Any]: ...
+    def close(self) -> None: ...
+
+class _DBAPIConnection:
+    def cursor(self) -> _DBAPICursor: ...
+    def close(self) -> None: ...
+    def commit(self) -> None: ...
+    def rollback(self) -> None: ...
+
+class _DBAPI:
+    apilevel: str
+    threadsafety: int
+    paramstyle: str
+    Warning: Any
+    Error: Any
+    InterfaceError: Any
+    DatabaseError: Any
+    DataError: Any
+    OperationalError: Any
+    IntegrityError: Any
+    InternalError: Any
+    ProgrammingError: Any
+    NotSupportedError: Any
+    def connect(self, *args: Any, mode: str = ..., **kwargs: Any) -> Any: ...
+
+dbapi: _DBAPI
 
 # System API
 

@@ -39,8 +39,7 @@ class MockIRISNativeConnection:
 def test_native_api_proxy_cls():
     db = MockIRISNativeConnection()
     
-    # 1. Register active connection
-    iris.set_active_connection(db)
+    iris.runtime.configure(mode="native", iris=db)
     
     try:
         # 2. Test class mapping
@@ -71,5 +70,17 @@ def test_native_api_proxy_cls():
         assert ("%State", "Saved") in db.set_props
 
     finally:
-        # Cleanup
-        iris.set_active_connection(None)
+        iris.runtime.reset()
+
+
+def test_runtime_reset_clears_native_handle():
+    db = MockIRISNativeConnection()
+
+    iris.runtime.configure(mode="native", iris=db)
+    assert iris.runtime.iris is db
+    assert iris.runtime.mode == "native"
+
+    iris.runtime.reset()
+
+    assert iris.runtime.iris is None
+    assert iris.runtime.mode == "auto"

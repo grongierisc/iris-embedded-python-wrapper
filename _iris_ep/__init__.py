@@ -6,7 +6,8 @@ import logging
 logging.basicConfig(level=logging.INFO)
 
 from .iris_ipm import ipm
-from iris_utils import update_dynalib_path, set_active_connection, get_active_connection,NativeClassProxy
+from ._dbapi import make_dbapi
+from iris_utils import NativeClassProxy, runtime as _runtime_manager, update_dynalib_path
 
 # check for install dir in environment
 # environment to check is IRISINSTALLDIR
@@ -16,6 +17,8 @@ installdir = os.environ.get('IRISINSTALLDIR') or os.environ.get('ISC_PACKAGE_INS
 __sysversion_info = sys.version_info
 __syspath = sys.path
 __osname = os.name
+
+_runtime_manager.configure(install_dir=installdir)
 
 if installdir is None:
     logging.warning("IRISINSTALLDIR or ISC_PACKAGE_INSTALLDIR environment variable must be set")
@@ -70,12 +73,18 @@ else:
             logging.warning("Embedded Python not available")
             
             def __getattr__(name):
-                # Check for active Native API connection before returning mock
-                if get_active_connection() is not None:
-                    # Let the standard python attribute lookup handle it 
-                    # if it's already defined, but if missing we might need 
-                    # specific behavior. Here, we just raise AttributeError 
-                    # so that explicit Native API calls fail predictably instead of silently mocked.
+                current_runtime = _runtime_manager.get()
+                if current_runtime.mode == 'native':
+                    if current_runtime.iris is None:
+                        raise RuntimeError(
+                            "iris.runtime is configured for native mode, but no native IRIS handle is bound"
+                        )
+                    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+                if current_runtime.mode == 'embedded':
+                    raise RuntimeError(
+                        "iris.runtime is configured for embedded mode, but embedded Python is unavailable"
+                    )
+                if current_runtime.iris is not None:
                     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
                     
                 if name == "__all__":
@@ -89,18 +98,64 @@ else:
 _original_cls = globals().get('cls')
 
 def cls(class_name):
-    # Check if we have an active Native API connection
-    conn = get_active_connection()
-    if conn is not None:
-        # Return NativeClassProxy mapped to the connection
-        return NativeClassProxy(class_name, conn)
-    elif _original_cls is not None:
-        # Fallback to the original Embedded Python cls
+    current_runtime = _runtime_manager.get()
+    if current_runtime.mode == 'native':
+        if current_runtime.iris is None:
+            raise RuntimeError("iris.runtime is configured for native mode, but no native IRIS handle is bound")
+        return NativeClassProxy(class_name, current_runtime.iris)
+    if current_runtime.mode == 'embedded':
+        if _original_cls is None:
+            raise RuntimeError("iris.runtime is configured for embedded mode, but embedded Python is unavailable")
         return _original_cls(class_name)
-    else:
-        logging.warning("No Embedded Python or Native API connection available.")
-        from unittest.mock import MagicMock
-        return MagicMock()
+    if current_runtime.embedded_available and _original_cls is not None:
+        return _original_cls(class_name)
+    if current_runtime.iris is not None:
+        return NativeClassProxy(class_name, current_runtime.iris)
+    logging.warning("No Embedded Python or Native API connection available.")
+    from unittest.mock import MagicMock
+    return MagicMock()
+
+
+class _RuntimeNamespace:
+    @property
+    def state(self):
+        return _runtime_manager.get().state
+
+    @property
+    def mode(self):
+        return _runtime_manager.get().mode
+
+    @property
+    def embedded_available(self):
+        return _runtime_manager.get().embedded_available
+
+    @property
+    def iris(self):
+        return _runtime_manager.get().iris
+
+    @property
+    def dbapi(self):
+        return _runtime_manager.get().dbapi
+
+    @property
+    def native_connection(self):
+        return _runtime_manager.get().native_connection
+
+    def get(self):
+        return _runtime_manager.get()
+
+    def configure(self, **kwargs):
+        return _runtime_manager.configure(**kwargs)
+
+    def reset(self):
+        return _runtime_manager.reset()
+
+
+runtime = _RuntimeNamespace()
+
+# Expose DB-API facade. It defaults to embedded SQL in auto mode, and can
+# delegate to native DB-API when remote parameters are provided.
+dbapi = make_dbapi(_runtime_manager, lambda: globals().get('sql'))
         
 # restore working directory
 os.chdir(__ospath)
