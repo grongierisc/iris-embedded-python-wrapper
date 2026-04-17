@@ -5,12 +5,6 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 
-## From compactibility with community edition
-try:
-    from intersystems_iris import *
-except ImportError:
-    pass
-
 from .iris_ipm import ipm
 from iris_utils import update_dynalib_path, set_active_connection, get_active_connection,NativeClassProxy
 
