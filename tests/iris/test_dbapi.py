@@ -2,55 +2,181 @@ import iris_embedded_python as iris
 import _iris_ep
 import _iris_ep._dbapi as embedded_dbapi
 import pytest
+import types
 
 
-class FakeResult:
-    def __init__(self, rows):
-        self._rows = list(rows)
-        self.description = [("col1",), ("col2",)]
-        self.rowcount = len(self._rows)
-
-    def __iter__(self):
-        return iter(self._rows)
-
-
-class FakePrepared:
+class FakeStatementResult:
     def __init__(self, rows):
         self._rows = rows
-        self.args_seen = None
-        self.kwargs_seen = None
+        self._index = -1
+        self._column_count = len(rows[0]) if rows else 0
 
-    def execute(self, *args, **kwargs):
-        self.args_seen = args
-        self.kwargs_seen = kwargs
-        return FakeResult(self._rows)
+    def _Next(self):
+        self._index += 1
+        return self._index < len(self._rows)
+
+    def _GetData(self, index):
+        return self._rows[self._index][index - 1]
+
+    def _Get(self, index):
+        return self._GetData(index)
+
+    def _GetColumnCount(self):
+        return self._column_count
 
 
-class FakeSQL:
+class FakeStatementResultNoColumnCount:
+    def __init__(self, rows):
+        self._rows = rows
+        self._index = -1
+
+    def _Next(self):
+        self._index += 1
+        return self._index < len(self._rows)
+
+    def _GetData(self, index):
+        row = self._rows[self._index]
+        if index < 1 or index > len(row):
+            raise IndexError(index)
+        return row[index - 1]
+
+    def _Get(self, index):
+        return self._GetData(index)
+
+
+class FakeStatementResultNoColumnCountInfinite:
     def __init__(self):
-        self.exec_seen = None
-        self.prepared = FakePrepared([(1, "a"), (2, "b")])
+        self._seen = 0
 
-    def exec(self, query):
-        self.exec_seen = query
-        return FakeResult([(10, "x"), (20, "y")])
+    def _Next(self):
+        # Single row shape for test purposes.
+        self._seen += 1
+        return self._seen == 1
 
-    def prepare(self, query):
-        self.prepared_query = query
-        return self.prepared
+    def _GetData(self, index):
+        # Never raises, which previously caused an infinite loop.
+        return index
+
+    def _Get(self, index):
+        return self._GetData(index)
+
+
+class FakeStatementResultGetDataOnly:
+    def __init__(self, rows):
+        self._rows = rows
+        self._index = -1
+        self._column_count = len(rows[0]) if rows else 0
+
+    def _Next(self):
+        self._index += 1
+        return self._index < len(self._rows)
+
+    def _GetData(self, index):
+        return self._rows[self._index][index - 1]
+
+    def _GetColumnCount(self):
+        return self._column_count
+
+
+class FakeStatementResultAttrOnly:
+    def __init__(self, rows, columns):
+        self._rows = rows
+        self._columns = columns
+        self._index = -1
+
+    def _Next(self):
+        self._index += 1
+        if self._index >= len(self._rows):
+            return False
+
+        row = self._rows[self._index]
+        for name, value in zip(self._columns, row):
+            setattr(self, name, value)
+            setattr(self, name.upper(), value)
+        return True
+
+
+class FakeStatement:
+    def __init__(self, rows):
+        self.rows = rows
+        self.prepare_seen = None
+        self.execute_args = None
+        self.execute_kwargs = None
+
+    def _Prepare(self, query):
+        self.prepare_seen = query
+
+    def _Execute(self, *args, **kwargs):
+        self.execute_args = args
+        self.execute_kwargs = kwargs
+        return FakeStatementResult(self.rows)
+
+
+class FakeStatementNoColumnCount(FakeStatement):
+    def _Execute(self, *args, **kwargs):
+        self.execute_args = args
+        self.execute_kwargs = kwargs
+        return FakeStatementResultNoColumnCount(self.rows)
+
+
+class FakeStatementNoColumnCountInfinite(FakeStatement):
+    def _Execute(self, *args, **kwargs):
+        self.execute_args = args
+        self.execute_kwargs = kwargs
+        return FakeStatementResultNoColumnCountInfinite()
+
+
+class FakeStatementGetDataOnly(FakeStatement):
+    def _Execute(self, *args, **kwargs):
+        self.execute_args = args
+        self.execute_kwargs = kwargs
+        return FakeStatementResultGetDataOnly(self.rows)
+
+
+class FakeStatementAttrOnly(FakeStatement):
+    def __init__(self, rows, columns):
+        super().__init__(rows)
+        self.columns = columns
+
+    def _Execute(self, *args, **kwargs):
+        self.execute_args = args
+        self.execute_kwargs = kwargs
+        return FakeStatementResultAttrOnly(self.rows, self.columns)
+
+
+class FakeStatementFactory:
+    def __init__(self, statement):
+        self.statement = statement
+
+    def _New(self):
+        return self.statement
 
 
 def test_dbapi_embedded_execute_and_fetch(monkeypatch):
-    fake_sql = FakeSQL()
-    monkeypatch.setattr(_iris_ep, "sql", fake_sql, raising=False)
+    fake_statement = FakeStatement([(10, "x"), (20, "y")])
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-kernel",
+            dbapi=None,
+        ),
+    )
 
     conn = iris.dbapi.connect(mode="embedded")
     cur = conn.cursor()
 
     cur.execute("select * from Demo")
-    assert fake_sql.exec_seen == "select * from Demo"
-    assert cur.description == [("col1",), ("col2",)]
-    assert cur.rowcount == 2
+    assert fake_statement.prepare_seen == "select * from Demo"
+    assert cur.description is None
+    assert cur.rowcount == -1
     assert cur.fetchone() == (10, "x")
     assert cur.fetchmany(1) == [(20, "y")]
     assert cur.fetchall() == []
@@ -60,22 +186,268 @@ def test_dbapi_embedded_execute_and_fetch(monkeypatch):
 
 
 def test_dbapi_embedded_prepared_params(monkeypatch):
-    fake_sql = FakeSQL()
-    monkeypatch.setattr(_iris_ep, "sql", fake_sql, raising=False)
+    fake_statement = FakeStatement([(1, "a")])
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-kernel",
+            dbapi=None,
+        ),
+    )
 
     conn = iris.dbapi.connect(mode="embedded")
     cur = conn.cursor()
 
     cur.execute("select * from Demo where id=? and name=?", (7, "z"))
 
-    assert fake_sql.prepared_query == "select * from Demo where id=? and name=?"
-    assert fake_sql.prepared.args_seen == (7, "z")
-    assert fake_sql.prepared.kwargs_seen == {}
+    assert fake_statement.prepare_seen == "select * from Demo where id=? and name=?"
+    assert fake_statement.execute_args == (7, "z")
+    assert fake_statement.execute_kwargs == {}
+
+
+def test_dbapi_embedded_prefers_sql_statement(monkeypatch):
+    fake_statement = FakeStatement([(3, "c"), (4, "d")])
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-kernel",
+            dbapi=None,
+        ),
+    )
+
+    conn = iris.dbapi.connect(mode="embedded")
+    cur = conn.cursor()
+    cur.execute("select * from Demo where id=?", (3,))
+
+    # %SQL.Statement path should be used first.
+    assert fake_statement.prepare_seen == "select * from Demo where id=?"
+    assert fake_statement.execute_args == (3,)
+    assert fake_statement.execute_kwargs == {}
+    assert cur.fetchall() == [(3, "c"), (4, "d")]
+
+
+def test_dbapi_embedded_result_without_column_count(monkeypatch):
+    fake_statement = FakeStatementNoColumnCount([(42,)])
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-local",
+            dbapi=None,
+        ),
+    )
+
+    conn = iris.dbapi.connect()
+    cur = conn.cursor()
+    cur.execute("select 1")
+
+    assert cur.fetchone() == (42,)
+
+
+def test_dbapi_embedded_result_without_column_count_does_not_hang(monkeypatch):
+    fake_statement = FakeStatementNoColumnCountInfinite([])
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-local",
+            dbapi=None,
+        ),
+    )
+
+    conn = iris.dbapi.connect()
+    cur = conn.cursor()
+    cur.execute("select 1")
+
+    assert cur.fetchone() == (1,)
+
+
+def test_dbapi_embedded_falls_back_to_getdata_accessor(monkeypatch):
+    fake_statement = FakeStatementGetDataOnly([(7, "gd")])
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-local",
+            dbapi=None,
+        ),
+    )
+
+    conn = iris.dbapi.connect()
+    cur = conn.cursor()
+    cur.execute("select 1")
+
+    assert cur.fetchone() == (7, "gd")
+
+
+def test_dbapi_embedded_falls_back_to_projection_attributes(monkeypatch):
+    fake_statement = FakeStatementAttrOnly([(9,)], ["result"])
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-local",
+            dbapi=None,
+        ),
+    )
+
+    conn = iris.dbapi.connect()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 AS result")
+
+    assert cur.fetchone() == (9,)
+
+
+def test_dbapi_embedded_mode_accepts_embedded_local(monkeypatch):
+    fake_statement = FakeStatement([(11, "local")])
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-local",
+            dbapi=None,
+        ),
+    )
+
+    conn = iris.dbapi.connect(mode="embedded")
+    cur = conn.cursor()
+    cur.execute("select 1")
+
+    assert fake_statement.prepare_seen == "select 1"
+    assert cur.fetchone() == (11, "local")
+
+
+def test_dbapi_auto_mode_defaults_to_embedded(monkeypatch):
+    fake_statement = FakeStatement([(5, "e")])
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-kernel",
+            dbapi=None,
+        ),
+    )
+
+    conn = iris.dbapi.connect()
+    cur = conn.cursor()
+    cur.execute("select 1")
+
+    assert fake_statement.prepare_seen == "select 1"
+    assert cur.fetchone() == (5, "e")
+
+
+def test_dbapi_auto_mode_accepts_embedded_local(monkeypatch):
+    fake_statement = FakeStatement([(6, "local")])
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-local",
+            dbapi=None,
+        ),
+    )
+
+    conn = iris.dbapi.connect()
+    cur = conn.cursor()
+    cur.execute("select 1")
+
+    assert fake_statement.prepare_seen == "select 1"
+    assert cur.fetchone() == (6, "local")
+
+
+def test_dbapi_auto_mode_rejects_unavailable_runtime(monkeypatch):
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(embedded_available=False, state="unavailable"),
+    )
+
+    with pytest.raises(iris.dbapi.InterfaceError, match="embedded"):
+        iris.dbapi.connect()
 
 
 def test_dbapi_connect_remains_independent_from_runtime_binding(monkeypatch):
-    fake_sql = FakeSQL()
-    monkeypatch.setattr(_iris_ep, "sql", fake_sql, raising=False)
+    fake_statement = FakeStatement([(1, "a")])
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-kernel",
+            dbapi=None,
+        ),
+    )
 
     iris.runtime.reset()
     assert iris.runtime.dbapi is None

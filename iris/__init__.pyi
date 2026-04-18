@@ -6,7 +6,7 @@ from typing import Any, Iterator, List, Optional, Tuple
 from . import iris_ipm
 
 __all__ = [
-    'check_status', 'cls', 'createConnection', 'createIRIS', 'dbapi', 'execute', 'gref', 'iris_ipm',
+    'check_status', 'cls', 'connect', 'createConnection', 'createIRIS', 'dbapi', 'execute', 'gref', 'iris_ipm',
     'lock', 'os', 'ref', 'routine', 'runtime', 'sql', 'system',
     'tcommit', 'tlevel', 'trollback', 'trollbackone', 'tstart', 'unlock', 'utils',
 ]
@@ -46,6 +46,22 @@ class IRIS:
         """Release a lock on an IRIS resource."""
     def iterator(self, global_name: str, *subscripts: Any) -> Iterator[Any]:
         """Return an iterator over subscripts of a global node."""
+
+def connect(
+    hostname: str,
+    port: int,
+    namespace: str,
+    username: str,
+    password: str,
+    timeout: Optional[int] = ...,
+    sharedmemory: bool = ...,
+    logfile: Optional[str] = ...,
+) -> IRISConnection:
+    """
+    Open a connection to an InterSystems IRIS instance using the Native API.
+    Returns an IRISConnection that must be passed to createIRIS().
+    Example: conn = iris.connect("localhost", 1972, "USER", "_SYSTEM", "SYS")
+    """
 
 def createConnection(
     hostname: str,

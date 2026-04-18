@@ -35,6 +35,10 @@ class NativeObjectProxy:
         self._db = db
 
     def __getattr__(self, name):
+        # FIX: Don't proxy standard Python internal lookups to IRIS
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
+
         mapped_name = name.replace("_", "%", 1) if name.startswith("_") else name
         
         # Speculative property read:
@@ -63,8 +67,11 @@ class NativeObjectProxy:
             super().__setattr__(name, value)
             return
         
+        # FIX: Unwrap proxy payload before sending to IRIS
+        if isinstance(value, NativeObjectProxy):
+            value = value._oref
+        
         mapped_name = name.replace("_", "%", 1) if name.startswith("_") else name
-        # New API: use oref.set(propName, value); Old API: use db.set(oref, propName, value)
         if hasattr(self._oref, 'set') and not hasattr(self._db, 'invokeClassMethod'):
             self._oref.set(mapped_name, value)
         else:

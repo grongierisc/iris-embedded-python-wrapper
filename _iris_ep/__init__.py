@@ -117,6 +117,44 @@ def cls(class_name):
 
 
 class _RuntimeNamespace:
+    @staticmethod
+    def _is_native_iris_handle(candidate):
+        if candidate is None:
+            return False
+        return hasattr(candidate, "classMethodValue") or hasattr(candidate, "invokeClassMethod")
+
+    @staticmethod
+    def _is_native_connection(candidate):
+        if candidate is None:
+            return False
+        has_connection_shape = hasattr(candidate, "isConnected")
+        has_iris_shape = _RuntimeNamespace._is_native_iris_handle(candidate)
+        return has_connection_shape and not has_iris_shape
+
+    @staticmethod
+    def _convert_connection_to_iris(connection):
+        if _RuntimeNamespace._is_native_iris_handle(connection):
+            return connection
+
+        create_iris = globals().get("createIRIS")
+        if not callable(create_iris):
+            try:
+                import iris as iris_module
+                create_iris = getattr(iris_module, "createIRIS", None)
+            except Exception:
+                create_iris = None
+
+        if not callable(create_iris):
+            raise RuntimeError(
+                "runtime.configure received an IRISConnection, but createIRIS() is unavailable"
+            )
+        iris_handle = create_iris(connection)
+        if iris_handle is None:
+            raise RuntimeError(
+                "runtime.configure could not convert IRISConnection to an IRIS handle via createIRIS()"
+            )
+        return iris_handle
+
     @property
     def state(self):
         return _runtime_manager.get().state
@@ -145,7 +183,35 @@ class _RuntimeNamespace:
         return _runtime_manager.get()
 
     def configure(self, **kwargs):
-        return _runtime_manager.configure(**kwargs)
+        config = dict(kwargs)
+
+        # If a native connection is provided, normalize it to an IRIS handle.
+        native_connection = config.get("native_connection")
+        if config.get("iris") is None and native_connection is not None:
+            if self._is_native_iris_handle(native_connection):
+                config["iris"] = native_connection
+            else:
+                config["iris"] = self._convert_connection_to_iris(native_connection)
+
+        # Accept connection-like objects passed as the "iris" argument and normalize them.
+        if config.get("iris") is not None and not self._is_native_iris_handle(config.get("iris")):
+            config["native_connection"] = config.get("native_connection") or config["iris"]
+            config["iris"] = self._convert_connection_to_iris(config["iris"])
+
+        # Infer native mode when caller binds explicit native/dbapi handles.
+        if "mode" not in config and (
+            config.get("iris") is not None
+            or config.get("native_connection") is not None
+            or config.get("dbapi") is not None
+        ):
+            config["mode"] = "native"
+
+        if config.get("mode") == "native" and config.get("iris") is None and config.get("dbapi") is None:
+            raise RuntimeError(
+                "runtime.configure in native mode requires a valid IRIS handle, a convertible IRISConnection, or dbapi connection"
+            )
+
+        return _runtime_manager.configure(**config)
 
     def reset(self):
         return _runtime_manager.reset()
@@ -155,7 +221,10 @@ runtime = _RuntimeNamespace()
 
 # Expose DB-API facade. It defaults to embedded SQL in auto mode, and can
 # delegate to native DB-API when remote parameters are provided.
-dbapi = make_dbapi(_runtime_manager, lambda: globals().get('sql'))
+dbapi = make_dbapi(
+    _runtime_manager,
+    lambda: globals().get('cls'),
+)
         
 # restore working directory
 os.chdir(__ospath)

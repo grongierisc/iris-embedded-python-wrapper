@@ -123,6 +123,13 @@ The wrapper now uses a unified runtime API through `iris.runtime`.
 - `iris.runtime.configure(mode="auto", install_dir=None, iris=None, dbapi=None, native_connection=None)`
 - `iris.runtime.reset()`
 
+`mode` is optional in `runtime.configure(...)`.
+
+- If `iris`, `native_connection`, or `dbapi` is provided, runtime infers native mode.
+- If no connection handle is provided, runtime stays in auto/embedded detection flow.
+
+`runtime.configure(...)` also accepts an `IRISConnection` and auto-converts it to an IRIS handle via `createIRIS(...)` for `iris.cls(...)` routing.
+
 ### Examples
 
 Force native object API routing:
@@ -130,9 +137,19 @@ Force native object API routing:
 ```python
 import iris
 
-conn = iris.createConnection("localhost", 1972, "USER", "_SYSTEM", "SYS")
-db = iris.createIRIS(conn)
-iris.runtime.configure(mode="native", iris=db, native_connection=conn)
+conn = iris.connect("localhost", 1972, "USER", "_SYSTEM", "SYS")
+iris.runtime.configure(mode="native", native_connection=conn)
+
+obj = iris.cls("Ens.StringRequest")._New()
+```
+
+Native routing with inferred mode and auto-conversion from `IRISConnection`:
+
+```python
+import iris
+
+conn = iris.connect("localhost", 1972, "USER", "_SYSTEM", "SYS")
+iris.runtime.configure(native_connection=conn)
 
 obj = iris.cls("Ens.StringRequest")._New()
 ```
@@ -170,14 +187,19 @@ The wrapper exposes a DB-API facade at `iris.dbapi`.
 
 `iris.dbapi.connect()` accepts `mode="auto" | "embedded" | "native"`.
 
-- `mode="embedded"`: forces embedded SQL backend (`iris.sql`)
+- `mode="embedded"`: forces embedded SQL backend via `%SQL.Statement`
 - `mode="native"`: forces native DB-API backend via the official module `iris.dbapi`
 - `mode="auto"`:
 	- if explicit remote arguments are provided (`hostname`, `port`, `namespace`, etc.), uses native
-	- otherwise prefers embedded when available
-	- falls back to native when embedded is not available
+	- otherwise defaults to embedded (`%SQL.Statement`)
+	- raises an error if embedded runtime is not available
 
 Native resolution uses the official module path `iris.dbapi` (not `intersystems_iris.dbapi`).
+
+`mode` is optional for DB-API.
+
+- With explicit remote arguments (`hostname`, `port`, `namespace`, `username`, `password`, etc.), DB-API infers native.
+- Without remote arguments, DB-API auto mode is embedded by default.
 
 ### Examples
 

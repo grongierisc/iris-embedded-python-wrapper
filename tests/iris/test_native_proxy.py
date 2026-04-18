@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import MagicMock
 import iris_embedded_python as iris
+import _iris_ep
 
 # A mock for the IRISObject class that would be returned by Native API
 class MockIRISObject:
@@ -33,6 +34,34 @@ class MockIRISNativeConnection:
         # Simulate property not existing by raising an Exception
         raise Exception("Property not found")
         
+    def set(self, oref, prop_name, value):
+        self.set_props.append((prop_name, value))
+
+
+class MockIRISConnection:
+    def isConnected(self):
+        return True
+
+
+class MockIRISHandleLikeConnection:
+    def __init__(self):
+        self.invoked_methods = []
+        self.get_props = []
+        self.set_props = []
+
+    def isConnected(self):
+        return True
+
+    def invokeClassMethod(self, class_name, method_name, *args):
+        self.invoked_methods.append((class_name, method_name, args))
+        return "Success"
+
+    def invoke(self, oref, method_name, *args):
+        return "MethodSuccess"
+
+    def get(self, oref, prop_name):
+        return "Value"
+
     def set(self, oref, prop_name, value):
         self.set_props.append((prop_name, value))
 
@@ -84,3 +113,57 @@ def test_runtime_reset_clears_native_handle():
 
     assert iris.runtime.iris is None
     assert iris.runtime.mode == "auto"
+
+
+def test_runtime_configure_accepts_native_connection_and_converts(monkeypatch):
+    conn = MockIRISConnection()
+    db = MockIRISNativeConnection()
+
+    monkeypatch.setattr(_iris_ep, "createIRIS", lambda c: db if c is conn else None, raising=False)
+
+    iris.runtime.configure(native_connection=conn)
+
+    try:
+        assert iris.runtime.mode == "native"
+        assert iris.runtime.native_connection is conn
+        assert iris.runtime.iris is db
+
+        bar_class = iris.cls("User.Bar")
+        bar_class._OpenId(1)
+        assert db.invoked_methods[0] == ("User.Bar", "%OpenId", (1,))
+    finally:
+        iris.runtime.reset()
+
+
+def test_runtime_configure_accepts_connection_passed_as_iris(monkeypatch):
+    conn = MockIRISConnection()
+    db = MockIRISNativeConnection()
+
+    monkeypatch.setattr(_iris_ep, "createIRIS", lambda c: db if c is conn else None, raising=False)
+
+    iris.runtime.configure(iris=conn)
+
+    try:
+        assert iris.runtime.mode == "native"
+        assert iris.runtime.native_connection is conn
+        assert iris.runtime.iris is db
+    finally:
+        iris.runtime.reset()
+
+
+def test_runtime_configure_accepts_native_connection_already_iris_handle(monkeypatch):
+    db = MockIRISHandleLikeConnection()
+
+    # If createIRIS gets called here, the test should fail.
+    monkeypatch.setattr(_iris_ep, "createIRIS", lambda _: (_ for _ in ()).throw(AssertionError("createIRIS should not be called")), raising=False)
+
+    iris.runtime.configure(native_connection=db)
+
+    try:
+        assert iris.runtime.mode == "native"
+        assert iris.runtime.iris is db
+
+        iris.cls("User.Bar").OpenId(1)
+        assert db.invoked_methods[0] == ("User.Bar", "OpenId", (1,))
+    finally:
+        iris.runtime.reset()
