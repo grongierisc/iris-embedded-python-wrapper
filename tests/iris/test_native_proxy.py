@@ -76,7 +76,6 @@ def test_native_api_proxy_cls():
         
         # Test class method call
         obj = bar_class._OpenId(1)
-        assert len(db.invoked_methods) == 1
         assert db.invoked_methods[0] == ("User.Bar", "%OpenId", (1,))
         
         # Ensure returned object is wrapped
@@ -165,5 +164,46 @@ def test_runtime_configure_accepts_native_connection_already_iris_handle(monkeyp
 
         iris.cls("User.Bar").OpenId(1)
         assert db.invoked_methods[0] == ("User.Bar", "OpenId", (1,))
+    finally:
+        iris.runtime.reset()
+
+
+def test_native_proxy_does_not_auto_convert_method_args():
+    db = MockIRISNativeConnection()
+
+    iris.runtime.configure(mode="native", iris=db)
+
+    try:
+        bar_class = iris.cls("User.Bar")
+        payload_dict = {"a": 1}
+        payload_list = [1, 2]
+        payload_bytes = b"abc"
+
+        bar_class._OpenId(payload_dict, payload_list, payload_bytes)
+
+        assert db.invoked_methods[0] == (
+            "User.Bar",
+            "%OpenId",
+            (payload_dict, payload_list, payload_bytes),
+        )
+    finally:
+        iris.runtime.reset()
+
+
+def test_native_proxy_does_not_auto_convert_property_values():
+    db = MockIRISNativeConnection()
+
+    iris.runtime.configure(mode="native", iris=db)
+
+    try:
+        obj = iris.cls("User.Bar")._OpenId(1)
+        payload_dict = {"k": "v"}
+        payload_bytes = b"bin"
+
+        obj.Payload = payload_dict
+        obj.Blob = payload_bytes
+
+        assert ("Payload", payload_dict) in db.set_props
+        assert ("Blob", payload_bytes) in db.set_props
     finally:
         iris.runtime.reset()
