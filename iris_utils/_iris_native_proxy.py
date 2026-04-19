@@ -8,11 +8,7 @@ def wrap_result(res, db):
     if res.__class__.__name__ == 'IRISObject':
         # 1. Identify the IRIS Class Name
         try:
-            # Native API format: res.invoke() or db.invoke(res)
-            if hasattr(res, 'invoke'):
-                classname = res.invoke("%ClassName", 1)
-            else:
-                classname = db.invoke(res, "%ClassName", 1)
+            classname = res.invoke("%ClassName", 1)
         except Exception:
             classname = ""
 
@@ -21,21 +17,12 @@ def wrap_result(res, db):
             import json
             try:
                 # Dump JSON to a temporary stream to read it back natively
-                if hasattr(db, 'classMethodValue'):
-                    s = db.classMethodValue("%Stream.GlobalCharacter", "%New")
-                else:
-                    s = db.invokeClassMethod("%Stream.GlobalCharacter", "%New")
+                s = db.classMethodValue("%Stream.GlobalCharacter", "%New")
                 
-                if hasattr(res, 'invoke'):
-                    res.invoke("%ToJSON", s)
-                    s.invoke("Rewind")
-                    size = s.get("Size")
-                    content = s.invoke("Read", size) if size and size > 0 else ""
-                else:
-                    db.invoke(res, "%ToJSON", s)
-                    db.invoke(s, "Rewind")
-                    size = db.get(s, "Size")
-                    content = db.invoke(s, "Read", size) if size and size > 0 else ""
+                res.invoke("%ToJSON", s)
+                s.invoke("Rewind")
+                size = s.get("Size")
+                content = s.invoke("Read", size) if size and size > 0 else ""
                 
                 return json.loads(content)
             except Exception:
@@ -44,16 +31,10 @@ def wrap_result(res, db):
         # 3. Automatically deserialize Streams to bytes/str
         elif classname in ("%Stream.GlobalBinary", "%Stream.GlobalCharacter", "%Stream.FileBinary", "%Stream.FileCharacter"):
             try:
-                if hasattr(res, 'invoke'):
-                    res.invoke("Rewind")
-                    size = res.get("Size")
-                    if not size: return b"" if "Binary" in classname else ""
-                    content = res.invoke("Read", size)
-                else:
-                    db.invoke(res, "Rewind")
-                    size = db.get(res, "Size")
-                    if not size: return b"" if "Binary" in classname else ""
-                    content = db.invoke(res, "Read", size)
+                res.invoke("Rewind")
+                size = res.get("Size")
+                if not size: return b"" if "Binary" in classname else ""
+                content = res.invoke("Read", size)
                 
                 # Native API sometimes parses binary wire payload as strings, encode to bytes
                 if "Binary" in classname and isinstance(content, str):
@@ -87,19 +68,38 @@ class NativeClassProxy:
         mapped_name = name.replace("_", "%", 1) if name.startswith("_") else name
 
         def method_proxy(*args):
-            # Support both old API (invokeClassMethod) and new API (classMethodValue)
-            if hasattr(self._db, 'invokeClassMethod'):
-                res = self._db.invokeClassMethod(self._class_name, mapped_name, *_wrap_args(args, self._db))
-            else:
-                res = self._db.classMethodValue(self._class_name, mapped_name, *_wrap_args(args, self._db))
+            res = self._db.classMethodValue(self._class_name, mapped_name, *_wrap_args(args, self._db))
             return wrap_result(res, self._db)
 
         return method_proxy
+
+_CLASS_PROPERTIES_CACHE = {}
+
+def _get_class_properties(classname, db):
+    if classname in _CLASS_PROPERTIES_CACHE:
+        return _CLASS_PROPERTIES_CACHE[classname]
+        
+    props = set()
+    try:
+        sql = "SELECT Name FROM %Dictionary.CompiledProperty WHERE parent = ?"
+        rs = db.classMethodObject("%SQL.Statement", "%ExecDirect", None, sql, classname)
+        while rs.invoke("%Next"):
+            name = rs.get("Name")
+            props.add(name)
+    except Exception:
+        pass
+        
+    _CLASS_PROPERTIES_CACHE[classname] = props
+    return props
 
 class NativeObjectProxy:
     def __init__(self, oref, db):
         self._oref = oref
         self._db = db
+        try:
+            self._iris_classname = oref.invoke("%ClassName", 1)
+        except Exception:
+            self._iris_classname = ""
 
     def __getattr__(self, name):
         # FIX: Don't proxy standard Python internal lookups to IRIS
@@ -108,29 +108,18 @@ class NativeObjectProxy:
 
         mapped_name = name.replace("_", "%", 1) if name.startswith("_") else name
         
-        # Speculative property read:
-        # Since Native API does not tell us immediately if an attribute is a property or method,
-        # we try fetching it as a property first.
-        try:
-            # New API: use oref.get(propName); Old API: use db.get(oref, propName)
-            if hasattr(self._oref, 'get') and not hasattr(self._db, 'invokeClassMethod'):
-                val = self._oref.get(mapped_name)
-            else:
-                val = self._db.get(self._oref, mapped_name)
+        props = _get_class_properties(self._iris_classname, self._db)
+        if mapped_name in props:
+            val = self._oref.get(mapped_name)
             return wrap_result(val, self._db)
-        except Exception as e:
-            # If property access fails (likely it's a method or doesn't exist), return a method callable
+        else:
             def method_proxy(*args):
-                # New API: use oref.invoke(methodName, ...); Old API: use db.invoke(oref, ...)
-                if hasattr(self._oref, 'invoke') and not hasattr(self._db, 'invokeClassMethod'):
-                    res = self._oref.invoke(mapped_name, *_wrap_args(args, self._db))
-                else:
-                    res = self._db.invoke(self._oref, mapped_name, *_wrap_args(args, self._db))
+                res = self._oref.invoke(mapped_name, *_wrap_args(args, self._db))
                 return wrap_result(res, self._db)
             return method_proxy
 
     def __setattr__(self, name, value):
-        if name in ["_oref", "_db"]:
+        if name in ["_oref", "_db", "_iris_classname"]:
             super().__setattr__(name, value)
             return
         
@@ -139,7 +128,4 @@ class NativeObjectProxy:
             value = value._oref
         
         mapped_name = name.replace("_", "%", 1) if name.startswith("_") else name
-        if hasattr(self._oref, 'set') and not hasattr(self._db, 'invokeClassMethod'):
-            self._oref.set(mapped_name, value)
-        else:
-            self._db.set(self._oref, mapped_name, value)
+        self._oref.set(mapped_name, value)
