@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import MagicMock
 import iris_embedded_python as iris
 import _iris_ep
+import iris_ep
 
 # A mock for the IRISObject class that would be returned by Native API
 class MockIRISObject:
@@ -207,3 +208,16 @@ def test_native_proxy_does_not_auto_convert_property_values():
         assert ("Blob", payload_bytes) in db.set_props
     finally:
         iris.runtime.reset()
+
+
+def test_runtime_is_exported_from_wrapper_modules():
+    assert hasattr(_iris_ep, "runtime")
+    assert hasattr(iris_ep, "runtime")
+    assert hasattr(iris, "runtime")
+
+    assert _iris_ep.runtime is iris_ep.runtime
+    assert iris_ep.runtime is iris.runtime
+
+    current = iris.runtime.get()
+    assert hasattr(current, "mode")
+    assert hasattr(current, "state")

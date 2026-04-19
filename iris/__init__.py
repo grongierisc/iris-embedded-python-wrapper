@@ -23,17 +23,13 @@ try:
 except ImportError:
     pass
 
-# Utils
-try:
-    from iris_utils import *
-except ImportError:
-    pass
-
 # Re-bind unified wrapper symbols after wildcard driver imports.
 # Some drivers expose a conflicting dbapi module that shadows the wrapper facade.
 try:
     import iris_ep as _iris_ep
 
+    if hasattr(_iris_ep, "runtime"):
+        runtime = _iris_ep.runtime
     if hasattr(_iris_ep, "dbapi"):
         dbapi = _iris_ep.dbapi
     if hasattr(_iris_ep, "cls"):

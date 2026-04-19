@@ -217,14 +217,27 @@ class _RuntimeNamespace:
         return _runtime_manager.reset()
 
 
-runtime = _RuntimeNamespace()
+_runtime = _RuntimeNamespace()
+runtime = _runtime
 
 # Expose DB-API facade. It defaults to embedded SQL in auto mode, and can
 # delegate to native DB-API when remote parameters are provided.
 dbapi = make_dbapi(
-    _runtime_manager,
+    _runtime,
     lambda: globals().get('cls'),
 )
+
+_existing_all = globals().get("__all__")
+if isinstance(_existing_all, (list, tuple, set)):
+    _exported_names = [str(name) for name in _existing_all]
+else:
+    _exported_names = [name for name in globals() if not name.startswith("_")]
+
+for _name in ("runtime", "dbapi", "cls"):
+    if _name not in _exported_names:
+        _exported_names.append(_name)
+
+globals()["__all__"] = _exported_names
         
 # restore working directory
 os.chdir(__ospath)
