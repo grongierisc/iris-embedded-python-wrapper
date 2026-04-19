@@ -16,7 +16,11 @@ class IrisVersion:
 
     @property
     def requires_python_version(self) -> bool:
-        return self.major >= 2024 and self.minor >= 2
+        return (self.major, self.minor) >= (2024, 2)
+
+
+def python_version_string() -> str:
+    return f"{sys.version_info.major}.{sys.version_info.minor}"
 
 @dataclass
 class PythonConfig:
@@ -95,7 +99,7 @@ class IrisConfigManager:
             return os.path.join(
                 os.environ["VIRTUAL_ENV"],
                 "lib", 
-                f"python{sys.version[:4]}", 
+                f"python{python_version_string()}",
                 "site-packages"
             )
         return ""
@@ -107,7 +111,7 @@ class IrisConfigManager:
         config = PythonConfig(
             runtime=libpython,
             path=self.python_path,
-            version=sys.version[:4] if self.iris_version.requires_python_version else None
+            version=python_version_string() if self.iris_version.requires_python_version else None
         )
 
         self.make_backup()

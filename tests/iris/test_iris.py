@@ -32,3 +32,28 @@ def test_runtime_embedded_mode_requires_embedded_backend():
 
     iris.runtime.reset()
 
+
+def test_runtime_reconfigure_clears_native_handles():
+    iris.runtime.reset()
+
+    class FakeIRISHandle:
+        def classMethodValue(self, *args, **kwargs):
+            raise NotImplementedError
+
+    handle = FakeIRISHandle()
+
+    iris.runtime.configure(mode="native", iris=handle, native_connection="CONN", dbapi="DBAPI")
+    assert iris.runtime.mode == "native"
+    assert iris.runtime.iris is handle
+    assert iris.runtime.native_connection == "CONN"
+    assert iris.runtime.dbapi == "DBAPI"
+
+    iris.runtime.configure(mode="embedded", install_dir=None)
+
+    assert iris.runtime.mode == "embedded"
+    assert iris.runtime.state == "unavailable"
+    assert iris.runtime.iris is None
+    assert iris.runtime.native_connection is None
+    assert iris.runtime.dbapi is None
+
+    iris.runtime.reset()

@@ -1,7 +1,7 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 import pytest
-from iris_utils._cli import IrisConfigManager, IrisVersion, unbind, bind
+from iris_utils._cli import IrisConfigManager, IrisVersion, python_version_string, unbind, bind
 
 @pytest.fixture
 def mock_env(monkeypatch, tmp_path):
@@ -111,3 +111,16 @@ def test_missing_installdir(monkeypatch):
     
     with pytest.raises(EnvironmentError, match="IRISINSTALLDIR environment variable must be set"):
         IrisConfigManager()
+
+
+def test_requires_python_version_for_2025_1():
+    assert IrisVersion(2025, 1).requires_python_version is True
+
+
+def test_python_version_string_uses_major_minor_only():
+    assert python_version_string() == "3.11"
+
+
+def test_get_python_path_uses_major_minor_only(mock_env):
+    manager = IrisConfigManager()
+    assert manager.python_path.endswith("lib/python3.11/site-packages")

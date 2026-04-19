@@ -109,20 +109,22 @@ class RuntimeManager:
         self,
         mode: RuntimeMode = 'auto',
         install_dir: Optional[str] = _UNSET,
-        iris: Any = None,
-        dbapi: Any = None,
-        native_connection: Any = None,
+        iris: Any = _UNSET,
+        dbapi: Any = _UNSET,
+        native_connection: Any = _UNSET,
     ) -> RuntimeContext:
         self._context.mode = mode
         if install_dir is not _UNSET:
             self._context.install_dir = install_dir
             self._context.install_dir_explicit = True
-        if iris is not None or mode == 'native':
-            self._context.iris = iris
-        if dbapi is not None:
-            self._context.dbapi = dbapi
-        if native_connection is not None:
-            self._context.native_connection = native_connection
+        # Treat configure() as setting the full runtime binding state.
+        # Unspecified handles must be cleared to avoid stale native bindings
+        # leaking into later embedded/auto configurations.
+        self._context.iris = None if iris is _UNSET else iris
+        self._context.dbapi = None if dbapi is _UNSET else dbapi
+        self._context.native_connection = (
+            None if native_connection is _UNSET else native_connection
+        )
         return self._context.refresh()
 
     def reset(self) -> RuntimeContext:
@@ -149,8 +151,11 @@ def update_dynalib_path(dynalib_path):
     
     # Update the environment variable by appending the dynalib path
     # Note: You can prepend instead by reversing the order in the join
-    new_paths = f"{current_paths}:{dynalib_path}" if current_paths else dynalib_path
+    new_paths = (
+        f"{current_paths}{os.pathsep}{dynalib_path}"
+        if current_paths
+        else dynalib_path
+    )
     
     # Update the environment variable
     os.environ[env_var] = new_paths
-
