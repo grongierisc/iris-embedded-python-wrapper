@@ -185,6 +185,31 @@ def test_dbapi_embedded_execute_and_fetch(monkeypatch):
     conn.close()
 
 
+def test_dbapi_embedded_normalizes_sql_null_and_empty_string(monkeypatch):
+    fake_statement = FakeStatement([("", "\x00", "plain", None)])
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-kernel",
+            dbapi=None,
+        ),
+    )
+
+    conn = iris.dbapi.connect(mode="embedded")
+    cur = conn.cursor()
+    cur.execute("select 1")
+
+    assert cur.fetchone() == (None, "", "plain", None)
+
+
 def test_dbapi_embedded_prepared_params(monkeypatch):
     fake_statement = FakeStatement([(1, "a")])
 
@@ -211,6 +236,58 @@ def test_dbapi_embedded_prepared_params(monkeypatch):
     assert fake_statement.prepare_seen == "select * from Demo where id=? and name=?"
     assert fake_statement.execute_args == (7, "z")
     assert fake_statement.execute_kwargs == {}
+
+
+def test_dbapi_embedded_prepared_params_normalize_empty_string(monkeypatch):
+    fake_statement = FakeStatement([(1, "a")])
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-kernel",
+            dbapi=None,
+        ),
+    )
+
+    conn = iris.dbapi.connect(mode="embedded")
+    cur = conn.cursor()
+
+    cur.execute("select * from Demo where a=? and b=? and c=?", ("", None, "z"))
+
+    assert fake_statement.execute_args == ("\x00", None, "z")
+
+
+def test_dbapi_embedded_prepared_dict_params_normalize_empty_string(monkeypatch):
+    fake_statement = FakeStatement([(1, "a")])
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-kernel",
+            dbapi=None,
+        ),
+    )
+
+    conn = iris.dbapi.connect(mode="embedded")
+    cur = conn.cursor()
+
+    cur.execute("select * from Demo where a=:a and b=:b", {"a": "", "b": None})
+
+    assert fake_statement.execute_kwargs == {"a": "\x00", "b": None}
 
 
 def test_dbapi_embedded_prefers_sql_statement(monkeypatch):
@@ -254,6 +331,7 @@ def test_dbapi_embedded_result_without_column_count(monkeypatch):
         _iris_ep.dbapi._runtime_manager,
         "get",
         lambda: types.SimpleNamespace(
+            mode="auto",
             embedded_available=True,
             state="embedded-local",
             dbapi=None,
@@ -279,6 +357,7 @@ def test_dbapi_embedded_result_without_column_count_does_not_hang(monkeypatch):
         _iris_ep.dbapi._runtime_manager,
         "get",
         lambda: types.SimpleNamespace(
+            mode="auto",
             embedded_available=True,
             state="embedded-local",
             dbapi=None,
@@ -304,6 +383,7 @@ def test_dbapi_embedded_falls_back_to_getdata_accessor(monkeypatch):
         _iris_ep.dbapi._runtime_manager,
         "get",
         lambda: types.SimpleNamespace(
+            mode="auto",
             embedded_available=True,
             state="embedded-local",
             dbapi=None,
@@ -329,6 +409,7 @@ def test_dbapi_embedded_falls_back_to_projection_attributes(monkeypatch):
         _iris_ep.dbapi._runtime_manager,
         "get",
         lambda: types.SimpleNamespace(
+            mode="auto",
             embedded_available=True,
             state="embedded-local",
             dbapi=None,
@@ -380,6 +461,7 @@ def test_dbapi_auto_mode_defaults_to_embedded(monkeypatch):
         _iris_ep.dbapi._runtime_manager,
         "get",
         lambda: types.SimpleNamespace(
+            mode="auto",
             embedded_available=True,
             state="embedded-kernel",
             dbapi=None,
@@ -406,6 +488,7 @@ def test_dbapi_auto_mode_accepts_embedded_local(monkeypatch):
         _iris_ep.dbapi._runtime_manager,
         "get",
         lambda: types.SimpleNamespace(
+            mode="auto",
             embedded_available=True,
             state="embedded-local",
             dbapi=None,
@@ -420,11 +503,44 @@ def test_dbapi_auto_mode_accepts_embedded_local(monkeypatch):
     assert cur.fetchone() == (6, "local")
 
 
+def test_dbapi_auto_mode_uses_bound_runtime_dbapi_in_native_mode(monkeypatch):
+    bound_conn = object()
+
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            mode="native",
+            embedded_available=True,
+            state="embedded-local",
+            dbapi=bound_conn,
+        ),
+    )
+
+    assert iris.dbapi.connect() is bound_conn
+
+
+def test_dbapi_auto_mode_rejects_native_runtime_without_bound_dbapi(monkeypatch):
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            mode="native",
+            embedded_available=True,
+            state="embedded-local",
+            dbapi=None,
+        ),
+    )
+
+    with pytest.raises(iris.dbapi.InterfaceError, match="cannot infer a native DB-API connection"):
+        iris.dbapi.connect()
+
+
 def test_dbapi_auto_mode_rejects_unavailable_runtime(monkeypatch):
     monkeypatch.setattr(
         _iris_ep.dbapi._runtime_manager,
         "get",
-        lambda: types.SimpleNamespace(embedded_available=False, state="unavailable"),
+        lambda: types.SimpleNamespace(mode="auto", embedded_available=False, state="unavailable", dbapi=None),
     )
 
     with pytest.raises(iris.dbapi.InterfaceError, match="embedded"):

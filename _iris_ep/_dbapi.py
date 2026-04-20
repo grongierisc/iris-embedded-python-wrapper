@@ -50,6 +50,50 @@ class NotSupportedError(DatabaseError):
     pass
 
 
+_SQL_EMPTY_STRING_SENTINEL = "\x00"
+
+
+def _normalize_embedded_result_value(value: Any):
+    # Embedded %SQL.Statement crosses the SQL/ObjectScript boundary, where
+    # SQL NULL becomes the ObjectScript null string ("") and SQL empty string
+    # becomes $CHAR(0). Normalize back to Python-facing values here.
+    if value == "":
+        return None
+    if value == _SQL_EMPTY_STRING_SENTINEL:
+        return ""
+    return value
+
+
+def _normalize_embedded_result_row(row: Any):
+    if isinstance(row, tuple):
+        return tuple(_normalize_embedded_result_value(value) for value in row)
+    if isinstance(row, list):
+        return [_normalize_embedded_result_value(value) for value in row]
+    return _normalize_embedded_result_value(row)
+
+
+def _normalize_embedded_param_value(value: Any):
+    # In the embedded SQL/ObjectScript boundary, Python empty string should be
+    # sent as the SQL empty-string sentinel so it round-trips distinctly from NULL.
+    if value == "":
+        return _SQL_EMPTY_STRING_SENTINEL
+    return value
+
+
+def _normalize_embedded_params(params: Any):
+    if isinstance(params, dict):
+        return {key: _normalize_embedded_param_value(value) for key, value in params.items()}
+    if isinstance(params, tuple):
+        return tuple(_normalize_embedded_param_value(value) for value in params)
+    if isinstance(params, list):
+        return [_normalize_embedded_param_value(value) for value in params]
+    if isinstance(params, (str, bytes)):
+        return _normalize_embedded_param_value(params)
+    if isinstance(params, Iterable):
+        return [_normalize_embedded_param_value(value) for value in params]
+    return _normalize_embedded_param_value(params)
+
+
 class _StatementResultIterator:
     def __init__(
         self,
@@ -64,7 +108,7 @@ class _StatementResultIterator:
     def _read_named_cell(self, name: str):
         for candidate in (name, name.upper(), name.lower()):
             try:
-                return getattr(self._statement_result, candidate)
+                return _normalize_embedded_result_value(getattr(self._statement_result, candidate))
             except Exception:
                 continue
         raise InterfaceError("Unsupported %SQL.Statement result object")
@@ -76,11 +120,11 @@ class _StatementResultIterator:
             raise InterfaceError("Unsupported %SQL.Statement result object")
 
         try:
-            return getter(index)
+            return _normalize_embedded_result_value(getter(index))
         except Exception as first_exc:
             # Some embedded bridges may map indexes as strings.
             try:
-                return getter(str(index))
+                return _normalize_embedded_result_value(getter(str(index)))
             except Exception as second_exc:
                 if "Method not found" in str(first_exc) or "Method not found" in str(second_exc):
                     raise InterfaceError("Unsupported %SQL.Statement result object") from second_exc
@@ -208,20 +252,21 @@ class _EmbeddedCursor:
             statement_class: Any = cls_fn("%SQL.Statement")
             statement = statement_class._New()
             statement._Prepare(operation)
+            normalized_params = _normalize_embedded_params(params)
 
             if params is None:
                 return statement._Execute()
 
-            if isinstance(params, dict):
-                return statement._Execute(**params)
+            if isinstance(normalized_params, dict):
+                return statement._Execute(**normalized_params)
 
-            if isinstance(params, (str, bytes)):
-                return statement._Execute(params)
+            if isinstance(normalized_params, (str, bytes)):
+                return statement._Execute(normalized_params)
 
-            if isinstance(params, Iterable):
-                return statement._Execute(*params)
+            if isinstance(normalized_params, Iterable):
+                return statement._Execute(*normalized_params)
 
-            return statement._Execute(params)
+            return statement._Execute(normalized_params)
         except Exception as exc:
             raise OperationalError(str(exc)) from exc
 
@@ -257,7 +302,7 @@ class _EmbeddedCursor:
         try:
             try:
                 # Prefer runtime-provided iterator when available.
-                return iter(result)
+                return (_normalize_embedded_result_row(row) for row in iter(result))
             except Exception:
                 pass
 
@@ -359,6 +404,15 @@ class _DBAPI:
             return self._connect_native(*args, **kwargs)
 
         runtime_state = self._runtime_manager.get()
+
+        if mode == "auto" and runtime_state.dbapi is not None:
+            return runtime_state.dbapi
+
+        if mode == "auto" and runtime_state.mode == "native":
+            raise InterfaceError(
+                "DB-API auto mode cannot infer a native DB-API connection from iris.runtime native bindings alone; "
+                "pass native connection arguments or bind a DB-API connection with iris.runtime.configure(dbapi=...)"
+            )
 
         if mode in ("embedded", "auto"):
             if not runtime_state.embedded_available or runtime_state.state not in (

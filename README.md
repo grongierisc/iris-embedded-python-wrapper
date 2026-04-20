@@ -183,6 +183,17 @@ The wrapper exposes a DB-API facade at `iris.dbapi`.
 - PEP 249 metadata: `apilevel`, `threadsafety`, `paramstyle`
 - PEP 249 exceptions: `Error`, `InterfaceError`, `OperationalError`, and related subclasses
 
+### Value normalization
+
+For the embedded `%SQL.Statement` backend, the wrapper normalizes IRIS SQL/ObjectScript string boundary values to Python values so embedded and remote DB-API behave the same way:
+
+- SQL `NULL` is returned as Python `None`
+- SQL empty string is returned as Python `""`
+- Python `None` passed as a parameter remains SQL `NULL`
+- Python `""` passed as a parameter is written as an SQL empty string, not SQL `NULL`
+
+This normalization is limited to the embedded DB-API path. Native/remote DB-API values are returned by the official driver.
+
 ### Connect modes
 
 `iris.dbapi.connect()` accepts `mode="auto" | "embedded" | "native"`.
@@ -191,7 +202,9 @@ The wrapper exposes a DB-API facade at `iris.dbapi`.
 - `mode="native"`: forces native DB-API backend via the official module `iris.dbapi`
 - `mode="auto"`:
 	- if explicit remote arguments are provided (`hostname`, `port`, `namespace`, etc.), uses native
-	- otherwise defaults to embedded (`%SQL.Statement`)
+	- if `iris.runtime.dbapi` is already bound, reuses that DB-API connection
+	- otherwise uses embedded (`%SQL.Statement`) only when runtime policy is not native
+	- if `iris.runtime` is configured for native mode without a bound DB-API connection, raises an error instead of silently falling back to embedded
 	- raises an error if embedded runtime is not available
 
 Native resolution uses the official module path `iris.dbapi` (not `intersystems_iris.dbapi`).
@@ -199,7 +212,8 @@ Native resolution uses the official module path `iris.dbapi` (not `intersystems_
 `mode` is optional for DB-API.
 
 - With explicit remote arguments (`hostname`, `port`, `namespace`, `username`, `password`, etc.), DB-API infers native.
-- Without remote arguments, DB-API auto mode is embedded by default.
+- With `iris.runtime.configure(dbapi=conn)`, DB-API auto mode reuses the bound native connection.
+- Without remote arguments or a bound runtime DB-API connection, DB-API auto mode uses embedded unless `iris.runtime` is explicitly in native mode.
 
 ### Examples
 
@@ -248,12 +262,32 @@ conn = iris.dbapi.connect(
 )
 ```
 
+Auto mode with a runtime-bound native DB-API connection:
+
+```python
+import iris
+
+conn = iris.dbapi.connect(
+		mode="native",
+		hostname="localhost",
+		port=1972,
+		namespace="USER",
+		username="_SYSTEM",
+		password="SYS",
+)
+iris.runtime.configure(dbapi=conn)
+
+same_conn = iris.dbapi.connect(mode="auto")
+assert same_conn is conn
+```
+
 ### Runtime independence
 
 `iris.dbapi.connect()` is independent from `iris.runtime` by default.
 
 Calling `iris.dbapi.connect(...)` does not auto-bind a connection into `iris.runtime.dbapi`.
 If you need runtime-managed DB-API binding, bind it explicitly with `iris.runtime.configure(dbapi=conn)`.
+Once bound, `iris.dbapi.connect(mode="auto")` reuses that connection instead of creating a new one.
 
 ## Bind a virtual environment to embedded python in IRIS
 

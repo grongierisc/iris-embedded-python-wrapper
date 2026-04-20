@@ -74,23 +74,50 @@ class NativeClassProxy:
         return method_proxy
 
 _CLASS_PROPERTIES_CACHE = {}
+_STRING_PROPERTY_TYPES = {
+    "%Library.String",
+    "%Library.RawString",
+    "%String",
+    "%RawString",
+}
 
 def _get_class_properties(classname, db):
     if classname in _CLASS_PROPERTIES_CACHE:
         return _CLASS_PROPERTIES_CACHE[classname]
         
-    props = set()
+    props = {}
     try:
-        sql = "SELECT Name FROM %Dictionary.CompiledProperty WHERE parent = ?"
+        sql = "SELECT Name, Type, RuntimeType, Collection FROM %Dictionary.CompiledProperty WHERE parent = ?"
         rs = db.classMethodObject("%SQL.Statement", "%ExecDirect", None, sql, classname)
         while rs.invoke("%Next"):
             name = rs.get("Name")
-            props.add(name)
+            props[name] = {
+                "type": rs.get("Type"),
+                "runtime_type": rs.get("RuntimeType"),
+                "collection": rs.get("Collection"),
+            }
     except Exception:
         pass
         
     _CLASS_PROPERTIES_CACHE[classname] = props
     return props
+
+
+def _is_string_property(metadata):
+    if not metadata:
+        return False
+
+    # Keep collection-valued properties untouched. Some collection proxies may
+    # use None to mean "missing" and should not be coerced into empty strings.
+    if metadata.get("collection") is not None:
+        return False
+
+    for key in ("runtime_type", "type"):
+        type_name = metadata.get(key)
+        if type_name in _STRING_PROPERTY_TYPES:
+            return True
+
+    return False
 
 class NativeObjectProxy:
     def __init__(self, oref, db):
@@ -111,6 +138,8 @@ class NativeObjectProxy:
         props = _get_class_properties(self._iris_classname, self._db)
         if mapped_name in props:
             val = self._oref.get(mapped_name)
+            if val is None and _is_string_property(props.get(mapped_name)):
+                return ""
             return wrap_result(val, self._db)
         else:
             def method_proxy(*args):

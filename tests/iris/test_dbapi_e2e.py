@@ -48,6 +48,22 @@ def _connect_for_mode(mode: str):
     raise AssertionError(f"Unsupported dbapi mode: {mode}")
 
 
+def _fetch_scalar(mode: str, sql: str, params=None):
+    conn = _connect_for_mode(mode)
+    cur = conn.cursor()
+    try:
+        if params is None:
+            cur.execute(sql)
+        else:
+            cur.execute(sql, params)
+        row = cur.fetchone()
+        assert row is not None
+        return row[0]
+    finally:
+        cur.close()
+        conn.close()
+
+
 def test_dbapi_e2e_parameterized_select(dbapi_mode):
     conn = _connect_for_mode(dbapi_mode)
     cur = conn.cursor()
@@ -179,3 +195,33 @@ def test_dbapi_e2e_execute_after_connection_close_raises(dbapi_mode):
             cur.execute("SELECT 1 AS result")
     finally:
         cur.close()
+
+
+def test_dbapi_e2e_null_scalar_matches_between_embedded_and_remote():
+    assert _embedded_runtime_ready(), "Embedded runtime is required for e2e test"
+
+    embedded_value = _fetch_scalar("embedded", "SELECT CAST(NULL AS VARCHAR(10)) AS value")
+    remote_value = _fetch_scalar("remote", "SELECT CAST(NULL AS VARCHAR(10)) AS value")
+
+    assert embedded_value == remote_value
+    assert embedded_value is None
+
+
+def test_dbapi_e2e_empty_string_literal_matches_between_embedded_and_remote():
+    assert _embedded_runtime_ready(), "Embedded runtime is required for e2e test"
+
+    embedded_value = _fetch_scalar("embedded", "SELECT '' AS value")
+    remote_value = _fetch_scalar("remote", "SELECT '' AS value")
+
+    assert embedded_value == remote_value
+    assert embedded_value == ""
+
+
+def test_dbapi_e2e_empty_string_parameter_matches_between_embedded_and_remote():
+    assert _embedded_runtime_ready(), "Embedded runtime is required for e2e test"
+
+    embedded_value = _fetch_scalar("embedded", "SELECT ? AS value", [""])
+    remote_value = _fetch_scalar("remote", "SELECT ? AS value", [""])
+
+    assert embedded_value == remote_value
+    assert embedded_value == ""
