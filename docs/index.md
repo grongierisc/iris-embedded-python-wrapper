@@ -195,6 +195,13 @@ For the embedded `%SQL.Statement` backend, the wrapper normalizes IRIS SQL/Objec
 
 This normalization is limited to the embedded DB-API path. Native/remote DB-API values are returned by the official driver.
 
+For the native object proxy path (`iris.cls(...)` with `iris.runtime` configured for native mode), the wrapper also normalizes declared scalar string properties:
+
+- `%String` / `%RawString` scalar properties that come back as `None` from the native proxy are returned as Python `""`
+- non-string properties are left unchanged
+- collection-valued properties are left unchanged
+- arbitrary method return values are left unchanged
+
 ### Connect modes
 
 `iris.dbapi.connect()` accepts `mode="auto" | "embedded" | "native"`.
