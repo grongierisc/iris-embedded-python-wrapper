@@ -10,7 +10,6 @@ apilevel = "2.0"
 threadsafety = 1
 paramstyle = "qmark"
 
-
 class Warning(Exception):
     """Exception raised for important warnings."""
 
@@ -105,6 +104,17 @@ class _StatementResultIterator:
         self._statement_result = statement_result
         self._column_count = column_count
         self._projected_columns = projected_columns or []
+        # Pre-built index tuple — avoids constructing range() on every __next__ call.
+        self._column_indices: Optional[tuple[int, ...]] = (
+            tuple(range(1, column_count + 1))
+            if isinstance(column_count, int) and column_count > 0
+            else None
+        )
+        # NOTE: Do NOT pre-bind _Next / _GetData via getattr() here.
+        # The IRIS Python bridge uses a single "current method" slot per object;
+        # calling getattr(obj, '_GetData') overwrites it and makes any previously
+        # returned _Next bound-method raise "Method not found". Always access
+        # methods via fresh attribute lookup on self._statement_result.
 
     def _read_named_cell(self, name: str):
         for candidate in (name, name.upper(), name.lower()):
@@ -135,10 +145,14 @@ class _StatementResultIterator:
         return self
 
     def __next__(self):
-        if not self._statement_result._Next():
+        sr = self._statement_result
+        if not sr._Next():
             raise StopIteration
-        if isinstance(self._column_count, int) and self._column_count > 0:
-            return tuple(self._read_cell(index) for index in range(1, self._column_count + 1))
+
+        # Fast path: known column count — skip named/slow-path overhead.
+        if self._column_indices is not None:
+            normalize = _normalize_embedded_result_value
+            return tuple(normalize(sr._GetData(i)) for i in self._column_indices)
 
         if self._projected_columns:
             try:
@@ -146,9 +160,7 @@ class _StatementResultIterator:
             except Exception:
                 pass
 
-        # Some embedded result objects don't expose column-count helpers.
-        # Avoid probing out-of-range column indexes because that can crash
-        # low-level native code on some runtimes.
+        # Fallback: slow path for unusual result objects.
         try:
             return (self._read_cell(1),)
         except Exception as exc:
@@ -161,6 +173,7 @@ class _EmbeddedConnection:
         self._use_statement = use_statement
         self._closed = False
         self._cls_fn: Any = None  # cached result of cls_getter() — avoids importlib overhead per execute
+        self._sql_rs_class: Any = None  # cached %SYS.Python.SQLResultSet class
 
     def __enter__(self):
         return self
@@ -179,10 +192,22 @@ class _EmbeddedConnection:
     def commit(self):
         if self._closed:
             raise InterfaceError("Connection is closed")
+        try:
+            import iris as _iris
+            if _iris.tlevel() > 0:
+                _iris.tcommit()
+        except Exception as exc:
+            raise OperationalError(str(exc)) from exc
 
     def rollback(self):
         if self._closed:
             raise InterfaceError("Connection is closed")
+        try:
+            import iris as _iris
+            if _iris.tlevel() > 0:
+                _iris.trollbackone()
+        except Exception as exc:
+            raise OperationalError(str(exc)) from exc
 
 
 class _EmbeddedCursor:
@@ -193,10 +218,11 @@ class _EmbeddedCursor:
         self.rowcount = -1
         self._result_iter = None
         self._closed = False
-        # Caches keyed by SQL string — avoids _New()/_Prepare() and projection
-        # parsing on repeated execute() calls with the same statement.
+        # Caches keyed by SQL string — avoids _New()/_Prepare(), projection parsing,
+        # and _ResultColumnCount probing on repeated execute() calls.
         self._statement_cache: dict[str, Any] = {}
         self._projection_cache: dict[str, Optional[list[str]]] = {}
+        self._column_count_cache: dict[str, int] = {}
 
     def __enter__(self):
         return self
@@ -218,23 +244,34 @@ class _EmbeddedCursor:
         self._result_iter = None
         self._statement_cache.clear()
         self._projection_cache.clear()
+        self._column_count_cache.clear()
 
     def execute(self, operation: str, params: Optional[Any] = None):
         if self._closed:
             raise InterfaceError("Cursor is closed")
         if self.connection._closed:
             raise InterfaceError("Connection is closed")
+        # Discard previous result BEFORE executing new statement.
+        # Deferring GC of the old %SQL.StatementResult until AFTER _Execute()
+        # can corrupt the new result (IRIS %OnClose side-effects on shared state).
+        self._result_iter = None
         try:
             result = self._execute_with_statement(operation, params)
+
             if operation not in self._projection_cache:
                 self._projection_cache[operation] = self._parse_select_projection(operation)
             projected_columns = self._projection_cache[operation]
-            result_iter = self._make_statement_result_iter(result, projected_columns)
+
+            known_col_count = self._column_count_cache.get(operation)
+            result_iter = self._make_statement_result_iter(result, projected_columns, known_col_count)
             if result_iter is None:
                 raise InterfaceError("Unsupported %SQL.Statement result object")
 
-            # Keep conservative defaults for statement path to avoid
-            # unsafe attribute probing on low-level embedded objects.
+            # Persist column count from projected_columns on first execution.
+            if known_col_count is None and isinstance(result_iter, _StatementResultIterator):
+                if result_iter._column_count is not None:
+                    self._column_count_cache[operation] = result_iter._column_count
+
             self.description = None
             self.rowcount = -1
             self._result_iter = result_iter
@@ -265,29 +302,33 @@ class _EmbeddedCursor:
         cls_fn = self.connection._cls_fn
 
         try:
-            # Re-use the prepared statement when the same SQL is executed again.
-            # _New() + _Prepare() account for ~half of embedded execute overhead.
-            if operation not in self._statement_cache:
+            # Cache prepared statements for SELECT only.
+            # DML (INSERT/UPDATE/DELETE) must use a fresh %SQL.Statement each
+            # time — IRIS does not allow re-executing the same prepared object
+            # for mutations.
+            is_select = operation.lstrip()[:6].upper() == "SELECT"
+            if is_select and operation in self._statement_cache:
+                statement = self._statement_cache[operation]
+            else:
                 statement_class: Any = cls_fn("%SQL.Statement")
                 statement = statement_class._New()
                 statement._Prepare(operation)
-                self._statement_cache[operation] = statement
-            statement = self._statement_cache[operation]
+                if is_select:
+                    self._statement_cache[operation] = statement
             normalized_params = _normalize_embedded_params(params)
 
             if params is None:
-                return statement._Execute()
+                raw = statement._Execute()
+            elif isinstance(normalized_params, dict):
+                raw = statement._Execute(**normalized_params)
+            elif isinstance(normalized_params, (str, bytes)):
+                raw = statement._Execute(normalized_params)
+            elif isinstance(normalized_params, Iterable):
+                raw = statement._Execute(*normalized_params)
+            else:
+                raw = statement._Execute(normalized_params)
 
-            if isinstance(normalized_params, dict):
-                return statement._Execute(**normalized_params)
-
-            if isinstance(normalized_params, (str, bytes)):
-                return statement._Execute(normalized_params)
-
-            if isinstance(normalized_params, Iterable):
-                return statement._Execute(*normalized_params)
-
-            return statement._Execute(normalized_params)
+            return raw
         except Exception as exc:
             raise OperationalError(str(exc)) from exc
 
@@ -319,36 +360,44 @@ class _EmbeddedCursor:
         return columns or None
 
     @staticmethod
-    def _make_statement_result_iter(result: Any, projected_columns: Optional[list[str]] = None):
+    def _make_statement_result_iter(
+        result: Any,
+        projected_columns: Optional[list[str]] = None,
+        known_col_count: Optional[int] = None,
+    ):
         try:
-            try:
-                # Prefer runtime-provided iterator when available.
-                return (_normalize_embedded_result_row(row) for row in iter(result))
-            except Exception:
-                pass
-
-            column_count = None
-            try:
-                candidate = result._ResultColumnCount
-                if isinstance(candidate, int) and candidate > 0:
-                    column_count = candidate
-            except Exception:
-                column_count = None
-
-            if column_count is None:
-                try:
-                    candidate = result._GetColumnCount()
-                    if isinstance(candidate, int) and candidate > 0:
-                        column_count = candidate
-                except Exception:
-                    column_count = None
-
-            return iter(
-                _StatementResultIterator(
+            # Fast path: column count already known — skip all probing.
+            if known_col_count is not None and known_col_count > 0:
+                return _StatementResultIterator(
                     result,
-                    column_count=column_count,
+                    column_count=known_col_count,
                     projected_columns=projected_columns,
                 )
+
+            # Derive column count from projected columns when available — avoids
+            # any property/method access on the result object before iteration
+            # starts.
+            column_count: Optional[int] = None
+            if projected_columns:
+                column_count = len(projected_columns)
+
+            return _StatementResultIterator(
+                result,
+                column_count=column_count,
+                projected_columns=projected_columns,
+            )
+
+            # Derive column count from projected columns when available — avoids
+            # any property/method access on the result object before iteration
+            # starts (accessing _ResultColumnCount can corrupt the IRIS cursor).
+            column_count: Optional[int] = None
+            if projected_columns:
+                column_count = len(projected_columns)
+
+            return _StatementResultIterator(
+                result,
+                column_count=column_count,
+                projected_columns=projected_columns,
             )
         except Exception:
             return None
