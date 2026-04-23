@@ -2,6 +2,7 @@ import iris_embedded_python as iris
 import _iris_ep
 import _iris_ep._dbapi as embedded_dbapi
 import pytest
+import sys
 import types
 
 
@@ -597,6 +598,34 @@ def test_dbapi_native_uses_official_iris_dbapi(monkeypatch):
     assert calls == ["iris.dbapi"]
     assert conn["kwargs"]["hostname"] == "localhost"
     assert conn["kwargs"]["port"] == 1972
+
+
+def test_dbapi_native_import_preserves_public_facade(monkeypatch):
+    calls = []
+    facade = iris.dbapi
+    parent_module = types.ModuleType("iris")
+    parent_module.dbapi = facade
+
+    class FakeNativeDBAPI:
+        @staticmethod
+        def connect(*args, **kwargs):
+            return {"args": args, "kwargs": kwargs}
+
+    def fake_import_module(name):
+        calls.append(name)
+        if name == "iris.dbapi":
+            parent_module.dbapi = FakeNativeDBAPI
+            return FakeNativeDBAPI
+        raise ImportError(name)
+
+    monkeypatch.setitem(sys.modules, "iris", parent_module)
+    monkeypatch.setattr(embedded_dbapi.importlib, "import_module", fake_import_module)
+
+    conn = facade.connect(mode="native", hostname="localhost", port=1972)
+
+    assert calls == ["iris.dbapi"]
+    assert conn["kwargs"]["hostname"] == "localhost"
+    assert parent_module.dbapi is facade
 
 
 def test_dbapi_native_errors_when_official_module_missing(monkeypatch):

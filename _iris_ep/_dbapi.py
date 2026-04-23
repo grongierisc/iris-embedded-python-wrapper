@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 import importlib
+import sys
 from typing import Any, Optional
 
 
@@ -434,10 +435,28 @@ class _DBAPI:
                 "Official native DB-API driver is unavailable (expected module: iris.dbapi)"
             ) from exc
 
+        self._restore_public_facade(native_dbapi)
+
         if not hasattr(native_dbapi, "connect"):
             raise InterfaceError("Official native DB-API driver is invalid: missing connect()")
 
         return native_dbapi.connect(*args, **kwargs)
+
+    def _restore_public_facade(self, native_dbapi: Any):
+        parent_module = sys.modules.get("iris")
+        if parent_module is None:
+            return
+
+        try:
+            current_dbapi = getattr(parent_module, "dbapi", None)
+        except Exception:
+            return
+
+        if current_dbapi is native_dbapi:
+            try:
+                setattr(parent_module, "dbapi", self)
+            except Exception:
+                pass
 
 
 def make_dbapi(runtime_manager: Any, cls_getter: Any = None) -> _DBAPI:
