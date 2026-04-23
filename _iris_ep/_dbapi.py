@@ -160,6 +160,7 @@ class _EmbeddedConnection:
         self._cls_getter = cls_getter
         self._use_statement = use_statement
         self._closed = False
+        self._cls_fn: Any = None  # cached result of cls_getter() — avoids importlib overhead per execute
 
     def __enter__(self):
         return self
@@ -192,6 +193,10 @@ class _EmbeddedCursor:
         self.rowcount = -1
         self._result_iter = None
         self._closed = False
+        # Caches keyed by SQL string — avoids _New()/_Prepare() and projection
+        # parsing on repeated execute() calls with the same statement.
+        self._statement_cache: dict[str, Any] = {}
+        self._projection_cache: dict[str, Optional[list[str]]] = {}
 
     def __enter__(self):
         return self
@@ -211,6 +216,8 @@ class _EmbeddedCursor:
     def close(self):
         self._closed = True
         self._result_iter = None
+        self._statement_cache.clear()
+        self._projection_cache.clear()
 
     def execute(self, operation: str, params: Optional[Any] = None):
         if self._closed:
@@ -219,7 +226,9 @@ class _EmbeddedCursor:
             raise InterfaceError("Connection is closed")
         try:
             result = self._execute_with_statement(operation, params)
-            projected_columns = self._parse_select_projection(operation)
+            if operation not in self._projection_cache:
+                self._projection_cache[operation] = self._parse_select_projection(operation)
+            projected_columns = self._projection_cache[operation]
             result_iter = self._make_statement_result_iter(result, projected_columns)
             if result_iter is None:
                 raise InterfaceError("Unsupported %SQL.Statement result object")
@@ -245,14 +254,25 @@ class _EmbeddedCursor:
         cls_getter = self.connection._cls_getter
         if cls_getter is None:
             raise InterfaceError("Embedded %SQL.Statement API is unavailable")
-        cls_fn = cls_getter()
-        if not callable(cls_fn):
-            raise InterfaceError("Embedded %SQL.Statement API is unavailable")
+
+        # Cache cls_fn on the connection: cls_getter() triggers RuntimeManager.get()
+        # -> refresh() -> can_import_embedded_python() -> importlib.import_module each call.
+        if self.connection._cls_fn is None:
+            cls_fn = cls_getter()
+            if not callable(cls_fn):
+                raise InterfaceError("Embedded %SQL.Statement API is unavailable")
+            self.connection._cls_fn = cls_fn
+        cls_fn = self.connection._cls_fn
 
         try:
-            statement_class: Any = cls_fn("%SQL.Statement")
-            statement = statement_class._New()
-            statement._Prepare(operation)
+            # Re-use the prepared statement when the same SQL is executed again.
+            # _New() + _Prepare() account for ~half of embedded execute overhead.
+            if operation not in self._statement_cache:
+                statement_class: Any = cls_fn("%SQL.Statement")
+                statement = statement_class._New()
+                statement._Prepare(operation)
+                self._statement_cache[operation] = statement
+            statement = self._statement_cache[operation]
             normalized_params = _normalize_embedded_params(params)
 
             if params is None:
