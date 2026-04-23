@@ -10,6 +10,13 @@ apilevel = "2.0"
 threadsafety = 1
 paramstyle = "qmark"
 
+_VALID_ISOLATION_LEVELS = frozenset({
+    "READ UNCOMMITTED",
+    "READ COMMITTED",
+    "REPEATABLE READ",
+    "SERIALIZABLE",
+})
+
 class Warning(Exception):
     """Exception raised for important warnings."""
 
@@ -168,17 +175,82 @@ class _StatementResultIterator:
 
 
 class _EmbeddedConnection:
-    def __init__(self, cls_getter: Any = None, use_statement: bool = False):
+    def __init__(
+        self,
+        cls_getter: Any = None,
+        use_statement: bool = False,
+        isolation_level: Optional[str] = None,
+    ):
         self._cls_getter = cls_getter
         self._use_statement = use_statement
         self._closed = False
         self._cls_fn: Any = None  # cached result of cls_getter() — avoids importlib overhead per execute
-        self._sql_rs_class: Any = None  # cached %SYS.Python.SQLResultSet class
+        self._sql_statement_class: Any = None  # cached %SQL.Statement class — avoids iris.cls() overhead per execute
+        # isolation_level=None means autocommit. Any other value starts a
+        # transaction (iris.tstart) before the first DML and requires an
+        # explicit commit() or rollback().
+        self._isolation_level: Optional[str] = None
+        if isolation_level is not None:
+            self.isolation_level = isolation_level  # validate via setter
+
+    # ------------------------------------------------------------------
+    # PEP 249 transaction attributes
+    # ------------------------------------------------------------------
+
+    @property
+    def isolation_level(self) -> Optional[str]:
+        """Current isolation level, or None for autocommit mode."""
+        return self._isolation_level
+
+    @isolation_level.setter
+    def isolation_level(self, value: Optional[str]) -> None:
+        if value is not None and value.upper() not in _VALID_ISOLATION_LEVELS:
+            raise InterfaceError(
+                f"Unsupported isolation level: {value!r}. "
+                f"Valid levels: {sorted(_VALID_ISOLATION_LEVELS)}"
+            )
+        self._isolation_level = value.upper() if value is not None else None
+
+    @property
+    def autocommit(self) -> bool:
+        """True when isolation_level is None (autocommit mode)."""
+        return self._isolation_level is None
+
+    @autocommit.setter
+    def autocommit(self, value: bool) -> None:
+        if value:
+            self._isolation_level = None
+        elif self._isolation_level is None:
+            self._isolation_level = "READ COMMITTED"
+
+    def _ensure_transaction(self) -> None:
+        """Start a transaction if not in autocommit mode and none is active."""
+        if self._isolation_level is None:
+            return  # autocommit — nothing to do
+        import iris as _iris
+        if _iris.tlevel() == 0:
+            # Set isolation level before opening the transaction.
+            self._exec_sql(f"SET TRANSACTION ISOLATION LEVEL {self._isolation_level}")
+            _iris.tstart()
+
+    def _exec_sql(self, sql: str) -> None:
+        """Execute a single SQL statement with no result (DDL / SET)."""
+        if self._cls_fn is None:
+            return  # not yet initialised — skip (e.g. called before first execute)
+        if self._sql_statement_class is None:
+            self._sql_statement_class = self._cls_fn("%SQL.Statement")
+        stmt = self._sql_statement_class._New()
+        stmt._Prepare(sql)
+        stmt._Execute()
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
+        if exc_type is not None:
+            self.rollback()
+        else:
+            self.commit()
         self.close()
 
     def cursor(self):
@@ -205,7 +277,7 @@ class _EmbeddedConnection:
         try:
             import iris as _iris
             if _iris.tlevel() > 0:
-                _iris.trollbackone()
+                _iris.trollback()  # roll back ALL nesting levels
         except Exception as exc:
             raise OperationalError(str(exc)) from exc
 
@@ -256,6 +328,7 @@ class _EmbeddedCursor:
         # can corrupt the new result (IRIS %OnClose side-effects on shared state).
         self._result_iter = None
         try:
+            self.connection._ensure_transaction()
             result = self._execute_with_statement(operation, params)
 
             if operation not in self._projection_cache:
@@ -282,6 +355,25 @@ class _EmbeddedCursor:
 
         return self
 
+    def executemany(self, operation: str, seq_of_parameters: Any):
+        """Execute an operation against a sequence of parameter sets."""
+        if self._closed:
+            raise InterfaceError("Cursor is closed")
+        if self.connection._closed:
+            raise InterfaceError("Connection is closed")
+        self._result_iter = None
+        try:
+            self.connection._ensure_transaction()
+            for params in seq_of_parameters:
+                self._execute_with_statement(operation, params)
+            self.description = None
+            self.rowcount = -1
+        except Error:
+            raise
+        except Exception as exc:
+            raise OperationalError(str(exc)) from exc
+        return self
+
     def _execute_with_statement(self, operation: str, params: Optional[Any]):
         if not self.connection._use_statement:
             raise InterfaceError(
@@ -302,19 +394,14 @@ class _EmbeddedCursor:
         cls_fn = self.connection._cls_fn
 
         try:
-            # Cache prepared statements for SELECT only.
-            # DML (INSERT/UPDATE/DELETE) must use a fresh %SQL.Statement each
-            # time — IRIS does not allow re-executing the same prepared object
-            # for mutations.
-            is_select = operation.lstrip()[:6].upper() == "SELECT"
-            if is_select and operation in self._statement_cache:
+            if operation in self._statement_cache:
                 statement = self._statement_cache[operation]
             else:
-                statement_class: Any = cls_fn("%SQL.Statement")
-                statement = statement_class._New()
+                if self.connection._sql_statement_class is None:
+                    self.connection._sql_statement_class = cls_fn("%SQL.Statement")
+                statement = self.connection._sql_statement_class._New()
                 statement._Prepare(operation)
-                if is_select:
-                    self._statement_cache[operation] = statement
+                self._statement_cache[operation] = statement
             normalized_params = _normalize_embedded_params(params)
 
             if params is None:
@@ -386,19 +473,6 @@ class _EmbeddedCursor:
                 column_count=column_count,
                 projected_columns=projected_columns,
             )
-
-            # Derive column count from projected columns when available — avoids
-            # any property/method access on the result object before iteration
-            # starts (accessing _ResultColumnCount can corrupt the IRIS cursor).
-            column_count: Optional[int] = None
-            if projected_columns:
-                column_count = len(projected_columns)
-
-            return _StatementResultIterator(
-                result,
-                column_count=column_count,
-                projected_columns=projected_columns,
-            )
         except Exception:
             return None
 
@@ -452,7 +526,7 @@ class _DBAPI:
         self.ProgrammingError = ProgrammingError
         self.NotSupportedError = NotSupportedError
 
-    def connect(self, *args, mode: str = "auto", **kwargs):
+    def connect(self, *args, mode: str = "auto", isolation_level: Optional[str] = None, **kwargs):
         # Explicit native mode or explicit remote arguments should use native dbapi.
         has_remote_args = bool(args) or any(
             key in kwargs
@@ -492,7 +566,7 @@ class _DBAPI:
                 raise InterfaceError(
                     "Embedded DB-API is only available in embedded runtime (embedded-kernel or embedded-local) via %SQL.Statement"
                 )
-            return _EmbeddedConnection(self._cls_getter, use_statement=True)
+            return _EmbeddedConnection(self._cls_getter, use_statement=True, isolation_level=isolation_level)
 
         raise InterfaceError(f"Unsupported dbapi mode: {mode}")
 
