@@ -443,6 +443,11 @@ class _EmbeddedCursor:
                 alias = alias.strip('"[]`')
                 if alias:
                     columns.append(alias)
+            else:
+                # Bare column name (possibly table-qualified): strip qualifier and quotes.
+                bare = item.split(".")[-1].strip().strip('"[]`')
+                if bare and bare != "*":
+                    columns.append(bare)
 
         return columns or None
 
