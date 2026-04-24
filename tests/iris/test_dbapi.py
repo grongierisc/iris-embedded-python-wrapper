@@ -153,6 +153,62 @@ class FakeStatementFactory:
         return self.statement
 
 
+class FakeNamespaceProcess:
+    def __init__(self, namespace="BASE"):
+        self.namespace = namespace
+        self.calls = []
+
+    def NameSpace(self):
+        self.calls.append(("NameSpace", self.namespace))
+        return self.namespace
+
+    def SetNamespace(self, namespace):
+        self.calls.append(("SetNamespace", namespace))
+        self.namespace = namespace
+        return namespace
+
+
+class FakeNamespaceStatementResult:
+    def __init__(self, process):
+        self.process = process
+        self._seen = False
+
+    def _Next(self):
+        if self._seen:
+            return False
+        self._seen = True
+        return True
+
+    def _GetData(self, index):
+        assert index == 1
+        return self.process.namespace
+
+
+class FakeNamespaceStatement:
+    def __init__(self, process):
+        self.process = process
+        self.prepare_seen = None
+        self.execute_namespaces = []
+
+    def _Prepare(self, query):
+        self.prepare_seen = query
+
+    def _Execute(self, *args, **kwargs):
+        self.execute_namespaces.append(self.process.namespace)
+        return FakeNamespaceStatementResult(self.process)
+
+
+class FakeNamespaceStatementFactory:
+    def __init__(self, process):
+        self.process = process
+        self.statements = []
+
+    def _New(self):
+        statement = FakeNamespaceStatement(self.process)
+        self.statements.append(statement)
+        return statement
+
+
 def test_dbapi_embedded_execute_and_fetch(monkeypatch):
     fake_statement = FakeStatement([(10, "x"), (20, "y")])
 
@@ -575,6 +631,62 @@ def test_dbapi_connect_remains_independent_from_runtime_binding(monkeypatch):
     assert iris.runtime.dbapi is None
 
     iris.runtime.reset()
+
+
+def test_dbapi_embedded_namespace_switches_per_logical_connection(monkeypatch):
+    process = FakeNamespaceProcess(namespace="BASE")
+    statement_factory = FakeNamespaceStatementFactory(process)
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return statement_factory
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-kernel",
+            dbapi=None,
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "iris",
+        types.SimpleNamespace(system=types.SimpleNamespace(Process=process)),
+    )
+
+    conn_user = iris.dbapi.connect(mode="embedded", namespace="USER")
+    conn_samples = iris.dbapi.connect(mode="embedded", namespace="SAMPLES")
+
+    cur_user = conn_user.cursor()
+    cur_samples = conn_samples.cursor()
+
+    cur_user.execute("SELECT 1 AS result")
+    cur_samples.execute("SELECT 1 AS result")
+
+    assert statement_factory.statements[0].execute_namespaces == ["USER"]
+    assert statement_factory.statements[1].execute_namespaces == ["SAMPLES"]
+    assert cur_user.fetchone() == ("USER",)
+    assert cur_samples.fetchone() == ("SAMPLES",)
+    assert process.namespace == "BASE"
+
+
+def test_dbapi_auto_mode_rejects_namespace_only_ambiguity(monkeypatch):
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            mode="auto",
+            embedded_available=True,
+            state="embedded-kernel",
+            dbapi=None,
+        ),
+    )
+
+    with pytest.raises(iris.dbapi.InterfaceError, match="cannot infer whether namespace"):
+        iris.dbapi.connect(namespace="USER")
 
 
 def test_dbapi_native_uses_official_iris_dbapi(monkeypatch):

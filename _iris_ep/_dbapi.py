@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from contextlib import contextmanager
+from enum import Enum
 import importlib
 import sys
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 
 apilevel = "2.0"
@@ -16,6 +18,7 @@ _VALID_ISOLATION_LEVELS = frozenset({
     "REPEATABLE READ",
     "SERIALIZABLE",
 })
+_DEFAULT_ISOLATION_LEVEL = "READ COMMITTED"
 
 class Warning(Exception):
     """Exception raised for important warnings."""
@@ -60,6 +63,10 @@ class NotSupportedError(DatabaseError):
 _SQL_EMPTY_STRING_SENTINEL = "\x00"
 
 
+def Binary(value: Any):
+    return bytes(value)
+
+
 def _normalize_embedded_result_value(value: Any):
     # Embedded %SQL.Statement crosses the SQL/ObjectScript boundary, where
     # SQL NULL becomes the ObjectScript null string ("") and SQL empty string
@@ -80,6 +87,12 @@ def _normalize_embedded_result_row(row: Any):
 
 
 def _normalize_embedded_param_value(value: Any):
+    if value is None:
+        return ""
+    if isinstance(value, Enum):
+        return _normalize_embedded_param_value(value.value)
+    if isinstance(value, bool):
+        return int(value)
     # In the embedded SQL/ObjectScript boundary, Python empty string should be
     # sent as the SQL empty-string sentinel so it round-trips distinctly from NULL.
     if value == "":
@@ -101,16 +114,131 @@ def _normalize_embedded_params(params: Any):
     return _normalize_embedded_param_value(params)
 
 
+def _raise_for_statement_error(result: Any):
+    try:
+        sqlcode = int(getattr(result, "_SQLCODE"))
+    except Exception:
+        return
+
+    if sqlcode >= 0:
+        return
+
+    try:
+        message = getattr(result, "_Message")
+    except Exception:
+        message = ""
+
+    raise DatabaseError(f"SQLCODE {sqlcode}: {message}" if message else f"SQLCODE {sqlcode}")
+
+
+def _get_result_column_count(result: Any) -> Optional[int]:
+    try:
+        column_count = int(getattr(result, "_ResultColumnCount") or 0)
+        if column_count > 0:
+            return column_count
+    except Exception:
+        pass
+
+    try:
+        metadata = result._GetMetadata()
+        column_count = int(getattr(metadata, "columnCount") or 0)
+        if column_count > 0:
+            return column_count
+    except Exception:
+        pass
+
+    return None
+
+
+def _get_result_description(
+    result: Any,
+    column_count: int,
+    fallback_names: Optional[list[str]] = None,
+):
+    names: list[str] = []
+
+    try:
+        metadata = result._GetMetadata()
+        columns = metadata.columns
+        for index in range(1, column_count + 1):
+            column = columns.GetAt(index)
+            name = (
+                getattr(column, "label", None)
+                or getattr(column, "colName", None)
+                or str(index)
+            )
+            names.append(str(name))
+    except Exception:
+        names = []
+
+    if len(names) != column_count:
+        names = list(fallback_names or [])
+        if len(names) != column_count:
+            names = [str(index) for index in range(1, column_count + 1)]
+
+    return tuple((name, None, None, None, None, None, None) for name in names)
+
+
+def _binary_result_processor(value: Any):
+    value = _normalize_embedded_result_value(value)
+    if value is None or isinstance(value, bytes):
+        return value
+    if isinstance(value, memoryview):
+        return value.tobytes()
+    if isinstance(value, bytearray):
+        return bytes(value)
+    if isinstance(value, str):
+        return value.encode("latin-1")
+    return bytes(value)
+
+
+def _integer_result_processor(value: Any):
+    value = _normalize_embedded_result_value(value)
+    if value is None or isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        return int(value)
+    return value
+
+
+def _get_result_processors(
+    result: Any, column_count: int
+) -> Optional[tuple[Callable[[Any], Any], ...]]:
+    try:
+        metadata = result._GetMetadata()
+        columns = metadata.columns
+    except Exception:
+        return None
+
+    processors: list[Callable[[Any], Any]] = []
+    for index in range(1, column_count + 1):
+        try:
+            client_type = int(getattr(columns.GetAt(index), "clientType"))
+        except Exception:
+            client_type = None
+
+        if client_type == 1:
+            processors.append(_binary_result_processor)
+        elif client_type in (5, 16, 18):
+            processors.append(_integer_result_processor)
+        else:
+            processors.append(_normalize_embedded_result_value)
+
+    return tuple(processors)
+
+
 class _StatementResultIterator:
     def __init__(
         self,
         statement_result: Any,
         column_count: Optional[int] = None,
         projected_columns: Optional[list[str]] = None,
+        processors: Optional[tuple[Callable[[Any], Any], ...]] = None,
     ):
         self._statement_result = statement_result
         self._column_count = column_count
         self._projected_columns = projected_columns or []
+        self._processors = processors
         # Pre-built index tuple — avoids constructing range() on every __next__ call.
         self._column_indices: Optional[tuple[int, ...]] = (
             tuple(range(1, column_count + 1))
@@ -154,12 +282,21 @@ class _StatementResultIterator:
     def __next__(self):
         sr = self._statement_result
         if not sr._Next():
+            _raise_for_statement_error(sr)
             raise StopIteration
 
         # Fast path: known column count — skip named/slow-path overhead.
         if self._column_indices is not None:
-            normalize = _normalize_embedded_result_value
-            return tuple(normalize(sr._GetData(i)) for i in self._column_indices)
+            processors = self._processors
+            if processors is not None:
+                return tuple(
+                    processor(sr._GetData(i))
+                    for i, processor in zip(self._column_indices, processors)
+                )
+            return tuple(
+                _normalize_embedded_result_value(sr._GetData(i))
+                for i in self._column_indices
+            )
 
         if self._projected_columns:
             try:
@@ -179,13 +316,16 @@ class _EmbeddedConnection:
         self,
         cls_getter: Any = None,
         use_statement: bool = False,
-        isolation_level: Optional[str] = None,
+        isolation_level: Optional[str] = _DEFAULT_ISOLATION_LEVEL,
+        namespace: Optional[str] = None,
     ):
         self._cls_getter = cls_getter
         self._use_statement = use_statement
         self._closed = False
+        self._namespace = namespace or None
         self._cls_fn: Any = None  # cached result of cls_getter() — avoids importlib overhead per execute
         self._sql_statement_class: Any = None  # cached %SQL.Statement class — avoids iris.cls() overhead per execute
+        self._process_api: Any = None  # cached iris.system.Process facade for namespace switching
         # isolation_level=None means autocommit. Any other value starts a
         # transaction (iris.tstart) before the first DML and requires an
         # explicit commit() or rollback().
@@ -240,8 +380,42 @@ class _EmbeddedConnection:
         if self._sql_statement_class is None:
             self._sql_statement_class = self._cls_fn("%SQL.Statement")
         stmt = self._sql_statement_class._New()
-        stmt._Prepare(sql)
-        stmt._Execute()
+        prepare_status = stmt._Prepare(sql)
+        if prepare_status != 1:
+            raise DatabaseError(str(prepare_status))
+        _raise_for_statement_error(stmt._Execute())
+
+    def _get_process_api(self):
+        if self._process_api is not None:
+            return self._process_api
+
+        import iris as _iris
+
+        process_api = getattr(getattr(_iris, "system", None), "Process", None)
+        if process_api is None:
+            raise InterfaceError("Embedded namespace switching requires iris.system.Process")
+
+        self._process_api = process_api
+        return process_api
+
+    @contextmanager
+    def _namespace_scope(self):
+        if self._namespace is None:
+            yield
+            return
+
+        process_api = self._get_process_api()
+        previous_namespace = process_api.NameSpace()
+        namespace_changed = previous_namespace != self._namespace
+
+        if namespace_changed:
+            process_api.SetNamespace(self._namespace)
+
+        try:
+            yield
+        finally:
+            if namespace_changed:
+                process_api.SetNamespace(previous_namespace)
 
     def __enter__(self):
         return self
@@ -266,8 +440,9 @@ class _EmbeddedConnection:
             raise InterfaceError("Connection is closed")
         try:
             import iris as _iris
-            if _iris.tlevel() > 0:
-                _iris.tcommit()
+            with self._namespace_scope():
+                if _iris.tlevel() > 0:
+                    _iris.tcommit()
         except Exception as exc:
             raise OperationalError(str(exc)) from exc
 
@@ -276,8 +451,9 @@ class _EmbeddedConnection:
             raise InterfaceError("Connection is closed")
         try:
             import iris as _iris
-            if _iris.tlevel() > 0:
-                _iris.trollback()  # roll back ALL nesting levels
+            with self._namespace_scope():
+                if _iris.tlevel() > 0:
+                    _iris.trollback()  # roll back ALL nesting levels
         except Exception as exc:
             raise OperationalError(str(exc)) from exc
 
@@ -328,26 +504,41 @@ class _EmbeddedCursor:
         # can corrupt the new result (IRIS %OnClose side-effects on shared state).
         self._result_iter = None
         try:
-            self.connection._ensure_transaction()
-            result = self._execute_with_statement(operation, params)
+            with self.connection._namespace_scope():
+                self.connection._ensure_transaction()
+                result = self._execute_with_statement(operation, params)
 
-            if operation not in self._projection_cache:
-                self._projection_cache[operation] = self._parse_select_projection(operation)
-            projected_columns = self._projection_cache[operation]
+                if operation not in self._projection_cache:
+                    self._projection_cache[operation] = self._parse_select_projection(operation)
+                projected_columns = self._projection_cache[operation]
 
-            known_col_count = self._column_count_cache.get(operation)
-            result_iter = self._make_statement_result_iter(result, projected_columns, known_col_count)
-            if result_iter is None:
-                raise InterfaceError("Unsupported %SQL.Statement result object")
+                known_col_count = self._column_count_cache.get(operation)
+                if known_col_count is None:
+                    known_col_count = _get_result_column_count(result)
+                    if known_col_count is not None:
+                        self._column_count_cache[operation] = known_col_count
 
-            # Persist column count from projected_columns on first execution.
-            if known_col_count is None and isinstance(result_iter, _StatementResultIterator):
-                if result_iter._column_count is not None:
-                    self._column_count_cache[operation] = result_iter._column_count
+                result_iter = self._make_statement_result_iter(result, projected_columns, known_col_count)
+                if result_iter is None:
+                    raise InterfaceError("Unsupported %SQL.Statement result object")
 
-            self.description = None
-            self.rowcount = -1
-            self._result_iter = result_iter
+                # Persist column count from projected_columns on first execution.
+                if known_col_count is None and isinstance(result_iter, _StatementResultIterator):
+                    if result_iter._column_count is not None:
+                        self._column_count_cache[operation] = result_iter._column_count
+
+            # PEP 249: cursor.description must be non-None for row-returning
+            # statements; ORM consumers (e.g. SQLAlchemy) rely on it to detect
+            # whether iteration is possible.
+            if known_col_count and known_col_count > 0:
+                self._result_iter = result_iter
+                self.description = _get_result_description(
+                    result, known_col_count, projected_columns
+                )
+            else:
+                self.description = None
+                self.rowcount = -1
+                self._result_iter = result_iter
         except Error:
             raise
         except Exception as exc:
@@ -363,11 +554,12 @@ class _EmbeddedCursor:
             raise InterfaceError("Connection is closed")
         self._result_iter = None
         try:
-            self.connection._ensure_transaction()
-            for params in seq_of_parameters:
-                self._execute_with_statement(operation, params)
-            self.description = None
-            self.rowcount = -1
+            with self.connection._namespace_scope():
+                self.connection._ensure_transaction()
+                for params in seq_of_parameters:
+                    self._execute_with_statement(operation, params)
+                self.description = None
+                self.rowcount = -1
         except Error:
             raise
         except Exception as exc:
@@ -400,7 +592,9 @@ class _EmbeddedCursor:
                 if self.connection._sql_statement_class is None:
                     self.connection._sql_statement_class = cls_fn("%SQL.Statement")
                 statement = self.connection._sql_statement_class._New()
-                statement._Prepare(operation)
+                prepare_status = statement._Prepare(operation)
+                if prepare_status != 1:
+                    raise DatabaseError(str(prepare_status))
                 self._statement_cache[operation] = statement
             normalized_params = _normalize_embedded_params(params)
 
@@ -415,8 +609,11 @@ class _EmbeddedCursor:
             else:
                 raw = statement._Execute(normalized_params)
 
+            _raise_for_statement_error(raw)
             return raw
         except Exception as exc:
+            if isinstance(exc, Error):
+                raise
             raise OperationalError(str(exc)) from exc
 
     @staticmethod
@@ -460,23 +657,54 @@ class _EmbeddedCursor:
         try:
             # Fast path: column count already known — skip all probing.
             if known_col_count is not None and known_col_count > 0:
-                return _StatementResultIterator(
-                    result,
-                    column_count=known_col_count,
-                    projected_columns=projected_columns,
+                processors = _get_result_processors(result, known_col_count)
+                return iter(
+                    _StatementResultIterator(
+                        result,
+                        column_count=known_col_count,
+                        projected_columns=projected_columns,
+                        processors=processors,
+                    )
                 )
 
-            # Derive column count from projected columns when available — avoids
-            # any property/method access on the result object before iteration
-            # starts.
-            column_count: Optional[int] = None
-            if projected_columns:
-                column_count = len(projected_columns)
+            try:
+                # Prefer runtime-provided iterator when available.
+                return (_normalize_embedded_result_row(row) for row in iter(result))
+            except Exception:
+                pass
 
-            return _StatementResultIterator(
-                result,
-                column_count=column_count,
-                projected_columns=projected_columns,
+            column_count: Optional[int] = None
+            try:
+                candidate = result._ResultColumnCount
+                if isinstance(candidate, int) and candidate > 0:
+                    column_count = candidate
+            except Exception:
+                column_count = None
+
+            if column_count is None:
+                try:
+                    candidate = result._GetColumnCount()
+                    if isinstance(candidate, int) and candidate > 0:
+                        column_count = candidate
+                except Exception:
+                    column_count = None
+
+            if column_count is None and projected_columns:
+                getter = getattr(result, "_GetData", None)
+                if callable(getter):
+                    column_count = len(projected_columns)
+
+            return iter(
+                _StatementResultIterator(
+                    result,
+                    column_count=column_count,
+                    projected_columns=projected_columns,
+                    processors=(
+                        _get_result_processors(result, column_count)
+                        if column_count is not None and column_count > 0
+                        else None
+                    ),
+                )
             )
         except Exception:
             return None
@@ -485,9 +713,14 @@ class _EmbeddedCursor:
         if self._result_iter is None:
             return None
         try:
-            return next(self._result_iter)
+            with self.connection._namespace_scope():
+                return next(self._result_iter)
         except StopIteration:
             return None
+        except Error:
+            raise
+        except Exception as exc:
+            raise OperationalError(str(exc)) from exc
 
     def fetchmany(self, size: Optional[int] = None):
         if size is None:
@@ -530,24 +763,37 @@ class _DBAPI:
         self.InternalError = InternalError
         self.ProgrammingError = ProgrammingError
         self.NotSupportedError = NotSupportedError
+        self.Binary = Binary
 
-    def connect(self, *args, mode: str = "auto", isolation_level: Optional[str] = None, **kwargs):
-        # Explicit native mode or explicit remote arguments should use native dbapi.
-        has_remote_args = bool(args) or any(
+    def connect(
+        self,
+        *args,
+        mode: str = "auto",
+        isolation_level: Optional[str] = _DEFAULT_ISOLATION_LEVEL,
+        **kwargs,
+    ):
+        has_namespace_arg = "namespace" in kwargs
+        has_native_remote_args = bool(args) or any(
             key in kwargs
             for key in (
                 "hostname",
                 "port",
-                "namespace",
                 "username",
                 "password",
                 "connectionstr",
                 "accessToken",
             )
         )
+        has_remote_args = has_native_remote_args or has_namespace_arg
 
         if mode not in ("auto", "embedded", "native"):
             raise InterfaceError(f"Unsupported dbapi mode: {mode}")
+
+        if mode == "auto" and has_namespace_arg and not has_native_remote_args:
+            raise InterfaceError(
+                "DB-API auto mode cannot infer whether namespace=... is for embedded or native; "
+                "pass mode='embedded' or provide native connection arguments"
+            )
 
         if mode == "native" or (mode == "auto" and has_remote_args):
             return self._connect_native(*args, **kwargs)
@@ -571,7 +817,12 @@ class _DBAPI:
                 raise InterfaceError(
                     "Embedded DB-API is only available in embedded runtime (embedded-kernel or embedded-local) via %SQL.Statement"
                 )
-            return _EmbeddedConnection(self._cls_getter, use_statement=True, isolation_level=isolation_level)
+            return _EmbeddedConnection(
+                self._cls_getter,
+                use_statement=True,
+                isolation_level=isolation_level,
+                namespace=kwargs.pop("namespace", None),
+            )
 
         raise InterfaceError(f"Unsupported dbapi mode: {mode}")
 
