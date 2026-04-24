@@ -89,10 +89,10 @@ def _normalize_embedded_result_row(row: Any):
 def _normalize_embedded_param_value(value: Any):
     if value is None:
         return ""
-    if isinstance(value, Enum):
-        return _normalize_embedded_param_value(value.value)
     if isinstance(value, bool):
         return int(value)
+    if isinstance(value, Enum):
+        return _normalize_embedded_param_value(value.value)
     # In the embedded SQL/ObjectScript boundary, Python empty string should be
     # sent as the SQL empty-string sentinel so it round-trips distinctly from NULL.
     if value == "":
@@ -100,13 +100,44 @@ def _normalize_embedded_param_value(value: Any):
     return value
 
 
+def _embedded_param_needs_normalization(value: Any) -> bool:
+    if value is None:
+        return True
+    value_type = type(value)
+    if value_type is bool:
+        return True
+    if value_type is str:
+        return value == ""
+    if value_type in (int, float, bytes):
+        return False
+    return isinstance(value, Enum) or value == ""
+
+
 def _normalize_embedded_params(params: Any):
     if isinstance(params, dict):
-        return {key: _normalize_embedded_param_value(value) for key, value in params.items()}
+        normalized = None
+        for key, value in params.items():
+            if _embedded_param_needs_normalization(value):
+                if normalized is None:
+                    normalized = dict(params)
+                normalized[key] = _normalize_embedded_param_value(value)
+        return params if normalized is None else normalized
     if isinstance(params, tuple):
-        return tuple(_normalize_embedded_param_value(value) for value in params)
+        normalized = None
+        for index, value in enumerate(params):
+            if _embedded_param_needs_normalization(value):
+                if normalized is None:
+                    normalized = list(params)
+                normalized[index] = _normalize_embedded_param_value(value)
+        return params if normalized is None else tuple(normalized)
     if isinstance(params, list):
-        return [_normalize_embedded_param_value(value) for value in params]
+        normalized = None
+        for index, value in enumerate(params):
+            if _embedded_param_needs_normalization(value):
+                if normalized is None:
+                    normalized = list(params)
+                normalized[index] = _normalize_embedded_param_value(value)
+        return params if normalized is None else normalized
     if isinstance(params, (str, bytes)):
         return _normalize_embedded_param_value(params)
     if isinstance(params, Iterable):
@@ -193,9 +224,12 @@ def _binary_result_processor(value: Any):
 
 
 def _integer_result_processor(value: Any):
-    value = _normalize_embedded_result_value(value)
     if value is None or isinstance(value, int):
         return value
+    if value == "":
+        return None
+    if value == _SQL_EMPTY_STRING_SENTINEL:
+        return ""
     if isinstance(value, str):
         return int(value)
     return value
@@ -289,14 +323,34 @@ class _StatementResultIterator:
         if self._column_indices is not None:
             processors = self._processors
             if processors is not None:
-                return tuple(
-                    processor(sr._GetData(i))
-                    for i, processor in zip(self._column_indices, processors)
+                if self._column_count == 1:
+                    return (processors[0](sr._GetData(1)),)
+                if self._column_count == 5:
+                    return (
+                        processors[0](sr._GetData(1)),
+                        processors[1](sr._GetData(2)),
+                        processors[2](sr._GetData(3)),
+                        processors[3](sr._GetData(4)),
+                        processors[4](sr._GetData(5)),
+                    )
+                row = []
+                for i, processor in zip(self._column_indices, processors):
+                    row.append(processor(sr._GetData(i)))
+                return tuple(row)
+            if self._column_count == 1:
+                return (_normalize_embedded_result_value(sr._GetData(1)),)
+            if self._column_count == 5:
+                return (
+                    _normalize_embedded_result_value(sr._GetData(1)),
+                    _normalize_embedded_result_value(sr._GetData(2)),
+                    _normalize_embedded_result_value(sr._GetData(3)),
+                    _normalize_embedded_result_value(sr._GetData(4)),
+                    _normalize_embedded_result_value(sr._GetData(5)),
                 )
-            return tuple(
-                _normalize_embedded_result_value(sr._GetData(i))
-                for i in self._column_indices
-            )
+            row = []
+            for i in self._column_indices:
+                row.append(_normalize_embedded_result_value(sr._GetData(i)))
+            return tuple(row)
 
         if self._projected_columns:
             try:
@@ -326,6 +380,7 @@ class _EmbeddedConnection:
         self._cls_fn: Any = None  # cached result of cls_getter() — avoids importlib overhead per execute
         self._sql_statement_class: Any = None  # cached %SQL.Statement class — avoids iris.cls() overhead per execute
         self._process_api: Any = None  # cached iris.system.Process facade for namespace switching
+        self._transaction_active = False
         # isolation_level=None means autocommit. Any other value starts a
         # transaction (iris.tstart) before the first DML and requires an
         # explicit commit() or rollback().
@@ -359,19 +414,32 @@ class _EmbeddedConnection:
     @autocommit.setter
     def autocommit(self, value: bool) -> None:
         if value:
+            if self._transaction_active:
+                self.commit()
             self._isolation_level = None
         elif self._isolation_level is None:
             self._isolation_level = "READ COMMITTED"
 
+    @staticmethod
+    def _needs_transaction(operation: str) -> bool:
+        first_token = operation.lstrip().split(None, 1)[0].upper() if operation.strip() else ""
+        return first_token in {
+            "INSERT",
+            "UPDATE",
+            "DELETE",
+            "MERGE",
+        }
+
     def _ensure_transaction(self) -> None:
         """Start a transaction if not in autocommit mode and none is active."""
-        if self._isolation_level is None:
+        if self._isolation_level is None or self._transaction_active:
             return  # autocommit — nothing to do
         import iris as _iris
         if _iris.tlevel() == 0:
             # Set isolation level before opening the transaction.
             self._exec_sql(f"SET TRANSACTION ISOLATION LEVEL {self._isolation_level}")
             _iris.tstart()
+            self._transaction_active = True
 
     def _exec_sql(self, sql: str) -> None:
         """Execute a single SQL statement with no result (DDL / SET)."""
@@ -433,7 +501,11 @@ class _EmbeddedConnection:
         return _EmbeddedCursor(self)
 
     def close(self):
-        self._closed = True
+        try:
+            if not self._closed and self._transaction_active:
+                self.rollback()
+        finally:
+            self._closed = True
 
     def commit(self):
         if self._closed:
@@ -441,8 +513,9 @@ class _EmbeddedConnection:
         try:
             import iris as _iris
             with self._namespace_scope():
-                if _iris.tlevel() > 0:
+                if self._transaction_active and _iris.tlevel() > 0:
                     _iris.tcommit()
+                self._transaction_active = False
         except Exception as exc:
             raise OperationalError(str(exc)) from exc
 
@@ -452,8 +525,9 @@ class _EmbeddedConnection:
         try:
             import iris as _iris
             with self._namespace_scope():
-                if _iris.tlevel() > 0:
+                if self._transaction_active and _iris.tlevel() > 0:
                     _iris.trollback()  # roll back ALL nesting levels
+                self._transaction_active = False
         except Exception as exc:
             raise OperationalError(str(exc)) from exc
 
@@ -471,6 +545,10 @@ class _EmbeddedCursor:
         self._statement_cache: dict[str, Any] = {}
         self._projection_cache: dict[str, Optional[list[str]]] = {}
         self._column_count_cache: dict[str, int] = {}
+        self._processor_cache: dict[str, Optional[tuple[Callable[[Any], Any], ...]]] = {}
+        self._description_cache: dict[str, Any] = {}
+        self._needs_transaction_cache: dict[str, bool] = {}
+        self._returns_rows_cache: dict[str, bool] = {}
 
     def __enter__(self):
         return self
@@ -493,6 +571,10 @@ class _EmbeddedCursor:
         self._statement_cache.clear()
         self._projection_cache.clear()
         self._column_count_cache.clear()
+        self._processor_cache.clear()
+        self._description_cache.clear()
+        self._needs_transaction_cache.clear()
+        self._returns_rows_cache.clear()
 
     def execute(self, operation: str, params: Optional[Any] = None):
         if self._closed:
@@ -504,45 +586,82 @@ class _EmbeddedCursor:
         # can corrupt the new result (IRIS %OnClose side-effects on shared state).
         self._result_iter = None
         try:
+            if self.connection._namespace is None:
+                return self._execute_current_namespace(operation, params)
             with self.connection._namespace_scope():
-                self.connection._ensure_transaction()
-                result = self._execute_with_statement(operation, params)
-
-                if operation not in self._projection_cache:
-                    self._projection_cache[operation] = self._parse_select_projection(operation)
-                projected_columns = self._projection_cache[operation]
-
-                known_col_count = self._column_count_cache.get(operation)
-                if known_col_count is None:
-                    known_col_count = _get_result_column_count(result)
-                    if known_col_count is not None:
-                        self._column_count_cache[operation] = known_col_count
-
-                result_iter = self._make_statement_result_iter(result, projected_columns, known_col_count)
-                if result_iter is None:
-                    raise InterfaceError("Unsupported %SQL.Statement result object")
-
-                # Persist column count from projected_columns on first execution.
-                if known_col_count is None and isinstance(result_iter, _StatementResultIterator):
-                    if result_iter._column_count is not None:
-                        self._column_count_cache[operation] = result_iter._column_count
-
-            # PEP 249: cursor.description must be non-None for row-returning
-            # statements; ORM consumers (e.g. SQLAlchemy) rely on it to detect
-            # whether iteration is possible.
-            if known_col_count and known_col_count > 0:
-                self._result_iter = result_iter
-                self.description = _get_result_description(
-                    result, known_col_count, projected_columns
-                )
-            else:
-                self.description = None
-                self.rowcount = -1
-                self._result_iter = result_iter
+                return self._execute_current_namespace(operation, params)
         except Error:
             raise
         except Exception as exc:
             raise OperationalError(str(exc)) from exc
+
+    def _execute_current_namespace(self, operation: str, params: Optional[Any] = None):
+        needs_transaction = self._needs_transaction_cache.get(operation)
+        if needs_transaction is None:
+            needs_transaction = self.connection._needs_transaction(operation)
+            self._needs_transaction_cache[operation] = needs_transaction
+        if needs_transaction and not self.connection._transaction_active:
+            self.connection._ensure_transaction()
+
+        result = self._execute_with_statement(operation, params)
+
+        returns_rows = self._returns_rows_cache.get(operation)
+        if returns_rows is None:
+            returns_rows = self._returns_rows(operation)
+            self._returns_rows_cache[operation] = returns_rows
+        if not returns_rows:
+            self.description = None
+            self.rowcount = -1
+            self._result_iter = None
+            return self
+
+        if operation not in self._projection_cache:
+            self._projection_cache[operation] = self._parse_select_projection(operation)
+        projected_columns = self._projection_cache[operation]
+
+        known_col_count = self._column_count_cache.get(operation)
+        if known_col_count is None:
+            known_col_count = _get_result_column_count(result)
+            if known_col_count is not None:
+                self._column_count_cache[operation] = known_col_count
+
+        cached_processors = self._processor_cache.get(operation)
+        result_iter = self._make_statement_result_iter(
+            result,
+            projected_columns,
+            known_col_count,
+            cached_processors,
+        )
+        if result_iter is None:
+            raise InterfaceError("Unsupported %SQL.Statement result object")
+
+        # Persist column count from projected_columns on first execution.
+        if known_col_count is None and isinstance(result_iter, _StatementResultIterator):
+            if result_iter._column_count is not None:
+                known_col_count = result_iter._column_count
+                self._column_count_cache[operation] = result_iter._column_count
+        if (
+            operation not in self._processor_cache
+            and isinstance(result_iter, _StatementResultIterator)
+        ):
+            self._processor_cache[operation] = result_iter._processors
+
+        # PEP 249: cursor.description must be non-None for row-returning
+        # statements; ORM consumers (e.g. SQLAlchemy) rely on it to detect
+        # whether iteration is possible.
+        if known_col_count and known_col_count > 0:
+            self._result_iter = result_iter
+            if operation in self._description_cache:
+                self.description = self._description_cache[operation]
+            else:
+                self.description = _get_result_description(
+                    result, known_col_count, projected_columns
+                )
+                self._description_cache[operation] = self.description
+        else:
+            self.description = None
+            self.rowcount = -1
+            self._result_iter = result_iter
 
         return self
 
@@ -554,17 +673,44 @@ class _EmbeddedCursor:
             raise InterfaceError("Connection is closed")
         self._result_iter = None
         try:
+            if self.connection._namespace is None:
+                return self._executemany_current_namespace(operation, seq_of_parameters)
             with self.connection._namespace_scope():
-                self.connection._ensure_transaction()
-                for params in seq_of_parameters:
-                    self._execute_with_statement(operation, params)
-                self.description = None
-                self.rowcount = -1
+                return self._executemany_current_namespace(operation, seq_of_parameters)
         except Error:
             raise
         except Exception as exc:
             raise OperationalError(str(exc)) from exc
+
+    def _executemany_current_namespace(self, operation: str, seq_of_parameters: Any):
+        needs_transaction = self._needs_transaction_cache.get(operation)
+        if needs_transaction is None:
+            needs_transaction = self.connection._needs_transaction(operation)
+            self._needs_transaction_cache[operation] = needs_transaction
+        if needs_transaction and not self.connection._transaction_active:
+            self.connection._ensure_transaction()
+        for params in seq_of_parameters:
+            self._execute_with_statement(operation, params)
+        self.description = None
+        self.rowcount = -1
         return self
+
+    @staticmethod
+    def _returns_rows(operation: str) -> bool:
+        first_token = operation.lstrip().split(None, 1)[0].upper() if operation.strip() else ""
+        return first_token not in {
+            "ALTER",
+            "CREATE",
+            "DELETE",
+            "DROP",
+            "GRANT",
+            "INSERT",
+            "MERGE",
+            "REVOKE",
+            "SET",
+            "TRUNCATE",
+            "UPDATE",
+        }
 
     def _execute_with_statement(self, operation: str, params: Optional[Any]):
         if not self.connection._use_statement:
@@ -596,18 +742,20 @@ class _EmbeddedCursor:
                 if prepare_status != 1:
                     raise DatabaseError(str(prepare_status))
                 self._statement_cache[operation] = statement
-            normalized_params = _normalize_embedded_params(params)
-
             if params is None:
                 raw = statement._Execute()
-            elif isinstance(normalized_params, dict):
-                raw = statement._Execute(**normalized_params)
-            elif isinstance(normalized_params, (str, bytes)):
-                raw = statement._Execute(normalized_params)
-            elif isinstance(normalized_params, Iterable):
-                raw = statement._Execute(*normalized_params)
             else:
-                raw = statement._Execute(normalized_params)
+                normalized_params = _normalize_embedded_params(params)
+                if isinstance(normalized_params, dict):
+                    raw = statement._Execute(**normalized_params)
+                elif isinstance(normalized_params, (tuple, list)):
+                    raw = statement._Execute(*normalized_params)
+                elif isinstance(normalized_params, (str, bytes)):
+                    raw = statement._Execute(normalized_params)
+                elif isinstance(normalized_params, Iterable):
+                    raw = statement._Execute(*normalized_params)
+                else:
+                    raw = statement._Execute(normalized_params)
 
             _raise_for_statement_error(raw)
             return raw
@@ -653,11 +801,13 @@ class _EmbeddedCursor:
         result: Any,
         projected_columns: Optional[list[str]] = None,
         known_col_count: Optional[int] = None,
+        processors: Optional[tuple[Callable[[Any], Any], ...]] = None,
     ):
         try:
             # Fast path: column count already known — skip all probing.
             if known_col_count is not None and known_col_count > 0:
-                processors = _get_result_processors(result, known_col_count)
+                if processors is None:
+                    processors = _get_result_processors(result, known_col_count)
                 return iter(
                     _StatementResultIterator(
                         result,
@@ -713,6 +863,8 @@ class _EmbeddedCursor:
         if self._result_iter is None:
             return None
         try:
+            if self.connection._namespace is None:
+                return next(self._result_iter)
             with self.connection._namespace_scope():
                 return next(self._result_iter)
         except StopIteration:
@@ -734,6 +886,16 @@ class _EmbeddedCursor:
         return rows
 
     def fetchall(self):
+        if self._result_iter is None:
+            return []
+        if self.connection._namespace is None:
+            try:
+                return list(self._result_iter)
+            except Error:
+                raise
+            except Exception as exc:
+                raise OperationalError(str(exc)) from exc
+
         rows = []
         while True:
             row = self.fetchone()
