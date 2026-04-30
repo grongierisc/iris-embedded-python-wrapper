@@ -211,16 +211,52 @@ def _get_result_description(
 
 
 def _binary_result_processor(value: Any):
-    value = _normalize_embedded_result_value(value)
     if value is None or isinstance(value, bytes):
         return value
+    if value == "":
+        return None
+    if value == _SQL_EMPTY_STRING_SENTINEL:
+        return b""
     if isinstance(value, memoryview):
         return value.tobytes()
     if isinstance(value, bytearray):
         return bytes(value)
     if isinstance(value, str):
+        stream_value = _read_binary_stream_reference(value)
+        if stream_value is not None:
+            return stream_value
         return value.encode("latin-1")
     return bytes(value)
+
+
+def _read_binary_stream_reference(value: str) -> Optional[bytes]:
+    try:
+        import iris as _iris
+
+        ref_buffer = value.encode("latin-1")
+        ref_list = _iris.IRISList(ref_buffer)
+        if ref_list.count() < 2:
+            return None
+
+        class_name = ref_list.get(2)
+        if not isinstance(class_name, str) or "Binary" not in class_name:
+            return None
+
+        stream = _iris.cls(class_name)._Open(value)
+        chunks: list[bytes] = []
+        while not getattr(stream, "AtEnd"):
+            chunk = stream.Read(32768)
+            if isinstance(chunk, bytes):
+                chunks.append(chunk)
+            elif isinstance(chunk, memoryview):
+                chunks.append(chunk.tobytes())
+            elif chunk:
+                chunks.append(str(chunk).encode("latin-1"))
+            else:
+                break
+        return b"".join(chunks)
+    except Exception:
+        return None
 
 
 def _integer_result_processor(value: Any):
@@ -251,7 +287,7 @@ def _get_result_processors(
         except Exception:
             client_type = None
 
-        if client_type == 1:
+        if client_type in (1, 12):
             processors.append(_binary_result_processor)
         elif client_type in (5, 16, 18):
             processors.append(_integer_result_processor)
