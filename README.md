@@ -37,7 +37,7 @@ export LD_LIBRARY_PATH=$IRISINSTALLDIR/bin:$LD_LIBRARY_PATH
 export DYLD_LIBRARY_PATH=$IRISINSTALLDIR/bin:$DYLD_LIBRARY_PATH
 # for IRIS username
 export IRISUSERNAME=SuperUser
-export IRISPASSWORD=SYS
+export IRISPASSWORD=<password>
 export IRISNAMESPACE=USER
 ```
 
@@ -72,7 +72,7 @@ For PowerShell, you can set the environment variables as follows:
 $env:IRISINSTALLDIR="C:\path\to\iris"
 $env:PATH="$env:IRISINSTALLDIR\bin;$env:PATH"
 $env:IRISUSERNAME="SuperUser"
-$env:IRISPASSWORD="SYS"
+$env:IRISPASSWORD="<password>"
 $env:IRISNAMESPACE="USER"
 ```
 
@@ -137,7 +137,7 @@ Force native object API routing:
 ```python
 import iris
 
-conn = iris.connect("localhost", 1972, "USER", "_SYSTEM", "SYS")
+conn = iris.connect("localhost", 1972, "USER", "SuperUser", "<password>")
 iris.runtime.configure(mode="native", native_connection=conn)
 
 obj = iris.cls("Ens.StringRequest")._New()
@@ -148,7 +148,7 @@ Native routing with inferred mode and auto-conversion from `IRISConnection`:
 ```python
 import iris
 
-conn = iris.connect("localhost", 1972, "USER", "_SYSTEM", "SYS")
+conn = iris.connect("localhost", 1972, "USER", "SuperUser", "<password>")
 iris.runtime.configure(native_connection=conn)
 
 obj = iris.cls("Ens.StringRequest")._New()
@@ -229,7 +229,7 @@ Embedded mode:
 ```python
 import iris
 
-conn = iris.dbapi.connect(mode="embedded")
+conn = iris.dbapi.connect()
 cur = conn.cursor()
 cur.execute("SELECT Name FROM Sample.Person")
 rows = cur.fetchall()
@@ -247,8 +247,8 @@ conn = iris.dbapi.connect(
 		hostname="localhost",
 		port=1972,
 		namespace="USER",
-		username="_SYSTEM",
-		password="SYS",
+		username="SuperUser",
+		password="<password>",
 )
 cur = conn.cursor()
 cur.execute("SELECT 1")
@@ -264,8 +264,8 @@ conn = iris.dbapi.connect(
 		hostname="localhost",
 		port=1972,
 		namespace="USER",
-		username="_SYSTEM",
-		password="SYS",
+		username="SuperUser",
+		password="<password>",
 )
 ```
 
