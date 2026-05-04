@@ -136,6 +136,162 @@ iris.system.Version.GetVersion()
 <p>Output:</p>
 <pre><code class="language-python">'IRIS for UNIX (Apple Mac OS X for x86-64) 2024.3 (Build 217U) Thu Nov 14 2024 17:29:23 EST'
 </code></pre>
+<h2 id="unified-runtime-context">Unified runtime context</h2>
+<p>The wrapper now uses a unified runtime API through <code>iris.runtime</code>.</p>
+<h3 id="runtime-model">Runtime model</h3>
+<ul>
+<li><code>iris.runtime.mode</code>: selected policy (<code>auto</code>, <code>embedded</code>, <code>native</code>)</li>
+<li><code>iris.runtime.state</code>: detected runtime (<code>embedded-kernel</code>, <code>embedded-local</code>, <code>native-remote</code>, <code>unavailable</code>)</li>
+<li><code>iris.runtime.embedded_available</code>: whether embedded backend can be used</li>
+<li><code>iris.runtime.iris</code>: currently bound native object API handle (optional)</li>
+<li><code>iris.runtime.dbapi</code>: optional explicitly bound DB-API connection</li>
+</ul>
+<h3 id="runtime-control-api">Runtime control API</h3>
+<ul>
+<li><code>iris.runtime.get()</code></li>
+<li><code>iris.runtime.configure(mode="auto", install_dir=None, iris=None, dbapi=None, native_connection=None)</code></li>
+<li><code>iris.runtime.reset()</code></li>
+</ul>
+<p><code>mode</code> is optional in <code>runtime.configure(...)</code>.</p>
+<ul>
+<li>If <code>iris</code>, <code>native_connection</code>, or <code>dbapi</code> is provided, runtime infers native mode.</li>
+<li>If no connection handle is provided, runtime stays in auto/embedded detection flow.</li>
+</ul>
+<p><code>runtime.configure(...)</code> also accepts an <code>IRISConnection</code> and auto-converts it to an IRIS handle via <code>createIRIS(...)</code> for <code>iris.cls(...)</code> routing.</p>
+<h3 id="examples">Examples</h3>
+<p>Force native object API routing:</p>
+<pre><code class="language-python">import iris
+
+conn = iris.createConnection(&quot;localhost&quot;, 1972, &quot;USER&quot;, &quot;_SYSTEM&quot;, &quot;SYS&quot;)
+db = iris.createIRIS(conn)
+iris.runtime.configure(mode=&quot;native&quot;, iris=db, native_connection=conn)
+
+obj = iris.cls(&quot;Ens.StringRequest&quot;)._New()
+</code></pre>
+<p>Native routing with inferred mode and auto-conversion from <code>IRISConnection</code>:</p>
+<pre><code class="language-python">import iris
+
+conn = iris.createConnection(&quot;localhost&quot;, 1972, &quot;USER&quot;, &quot;_SYSTEM&quot;, &quot;SYS&quot;)
+iris.runtime.configure(native_connection=conn)
+
+obj = iris.cls(&quot;Ens.StringRequest&quot;)._New()
+</code></pre>
+<p>Force embedded routing:</p>
+<pre><code class="language-python">import iris
+
+iris.runtime.configure(mode=&quot;embedded&quot;)
+obj = iris.cls(&quot;Ens.StringRequest&quot;)._New()
+</code></pre>
+<p>Reset to automatic detection:</p>
+<pre><code class="language-python">import iris
+
+iris.runtime.reset()
+</code></pre>
+<h2 id="db-api-irisdbapi">DB-API (<code>iris.dbapi</code>)</h2>
+<p>The wrapper exposes a DB-API facade at <code>iris.dbapi</code>.</p>
+<h3 id="supported-subset">Supported subset</h3>
+<ul>
+<li><code>iris.dbapi.connect(...)</code></li>
+<li>Connection: <code>cursor()</code>, <code>close()</code>, <code>commit()</code>, <code>rollback()</code></li>
+<li>Cursor: <code>execute()</code>, <code>fetchone()</code>, <code>fetchmany()</code>, <code>fetchall()</code>, iteration, <code>close()</code></li>
+<li>PEP 249 metadata: <code>apilevel</code>, <code>threadsafety</code>, <code>paramstyle</code></li>
+<li>PEP 249 exceptions: <code>Error</code>, <code>InterfaceError</code>, <code>OperationalError</code>, and related subclasses</li>
+</ul>
+<h3 id="value-normalization">Value normalization</h3>
+<p>For the embedded <code>%SQL.Statement</code> backend, the wrapper normalizes IRIS SQL/ObjectScript string boundary values to Python values so embedded and remote DB-API behave the same way:</p>
+<ul>
+<li>SQL <code>NULL</code> is returned as Python <code>None</code></li>
+<li>SQL empty string is returned as Python <code>""</code></li>
+<li>Python <code>None</code> passed as a parameter remains SQL <code>NULL</code></li>
+<li>Python <code>""</code> passed as a parameter is written as an SQL empty string, not SQL <code>NULL</code></li>
+</ul>
+<p>This normalization is limited to the embedded DB-API path. Native/remote DB-API values are returned by the official driver.</p>
+<p>For the native object proxy path (<code>iris.cls(...)</code> with <code>iris.runtime</code> configured for native mode), the wrapper also normalizes declared scalar string properties:</p>
+<ul>
+<li><code>%String</code> / <code>%RawString</code> scalar properties that come back as <code>None</code> from the native proxy are returned as Python <code>""</code></li>
+<li>non-string properties are left unchanged</li>
+<li>collection-valued properties are left unchanged</li>
+<li>arbitrary method return values are left unchanged</li>
+</ul>
+<h3 id="connect-modes">Connect modes</h3>
+<p><code>iris.dbapi.connect()</code> accepts <code>mode="auto" | "embedded" | "native"</code>.</p>
+<ul>
+<li><code>mode="embedded"</code>: forces embedded SQL backend via <code>%SQL.Statement</code></li>
+<li><code>mode="native"</code>: forces native DB-API backend via the official module <code>iris.dbapi</code></li>
+<li><code>mode="auto"</code>:<ul>
+<li>if explicit remote arguments are provided (<code>hostname</code>, <code>port</code>, <code>namespace</code>, etc.), uses native</li>
+<li>if <code>iris.runtime.dbapi</code> is already bound, reuses that DB-API connection</li>
+<li>otherwise uses embedded (<code>%SQL.Statement</code>) only when runtime policy is not native</li>
+<li>if <code>iris.runtime</code> is configured for native mode without a bound DB-API connection, raises an error instead of silently falling back to embedded</li>
+<li>raises an error if embedded runtime is not available</li>
+</ul>
+</li>
+</ul>
+<p>Native resolution uses the official module path <code>iris.dbapi</code> (not <code>intersystems_iris.dbapi</code>).</p>
+<p><code>mode</code> is optional for DB-API.</p>
+<ul>
+<li>With explicit remote arguments (<code>hostname</code>, <code>port</code>, <code>namespace</code>, <code>username</code>, <code>password</code>, etc.), DB-API infers native.</li>
+<li>With <code>iris.runtime.configure(dbapi=conn)</code>, DB-API auto mode reuses the bound native connection.</li>
+<li>Without remote arguments or a bound runtime DB-API connection, DB-API auto mode uses embedded unless <code>iris.runtime</code> is explicitly in native mode.</li>
+</ul>
+<h3 id="examples_1">Examples</h3>
+<p>Embedded mode:</p>
+<pre><code class="language-python">import iris
+
+conn = iris.dbapi.connect(mode=&quot;embedded&quot;)
+cur = conn.cursor()
+cur.execute(&quot;SELECT Name FROM Sample.Person&quot;)
+rows = cur.fetchall()
+cur.close()
+conn.close()
+</code></pre>
+<p>Native mode:</p>
+<pre><code class="language-python">import iris
+
+conn = iris.dbapi.connect(
+        mode=&quot;native&quot;,
+        hostname=&quot;localhost&quot;,
+        port=1972,
+        namespace=&quot;USER&quot;,
+        username=&quot;_SYSTEM&quot;,
+        password=&quot;SYS&quot;,
+)
+cur = conn.cursor()
+cur.execute(&quot;SELECT 1&quot;)
+print(cur.fetchone())
+</code></pre>
+<p>Auto mode with explicit remote arguments (routes to native):</p>
+<pre><code class="language-python">import iris
+
+conn = iris.dbapi.connect(
+        hostname=&quot;localhost&quot;,
+        port=1972,
+        namespace=&quot;USER&quot;,
+        username=&quot;_SYSTEM&quot;,
+        password=&quot;SYS&quot;,
+)
+</code></pre>
+<p>Auto mode with a runtime-bound native DB-API connection:</p>
+<pre><code class="language-python">import iris
+
+conn = iris.dbapi.connect(
+        mode=&quot;native&quot;,
+        hostname=&quot;localhost&quot;,
+        port=1972,
+        namespace=&quot;USER&quot;,
+        username=&quot;_SYSTEM&quot;,
+        password=&quot;SYS&quot;,
+)
+iris.runtime.configure(dbapi=conn)
+
+same_conn = iris.dbapi.connect(mode=&quot;auto&quot;)
+assert same_conn is conn
+</code></pre>
+<h3 id="runtime-independence">Runtime independence</h3>
+<p><code>iris.dbapi.connect()</code> is independent from <code>iris.runtime</code> by default.</p>
+<p>Calling <code>iris.dbapi.connect(...)</code> does not auto-bind a connection into <code>iris.runtime.dbapi</code>.
+If you need runtime-managed DB-API binding, bind it explicitly with <code>iris.runtime.configure(dbapi=conn)</code>.
+Once bound, <code>iris.dbapi.connect(mode="auto")</code> reuses that connection instead of creating a new one.</p>
 <h2 id="bind-a-virtual-environment-to-embedded-python-in-iris">Bind a virtual environment to embedded python in IRIS</h2>
 <p>You can also bind or unbind an virtual environment to embedded python in IRIS. Here is an example:</p>
 <pre><code class="language-bash">bind_iris
@@ -223,5 +379,5 @@ INFO:iris_utils._find_libpyton:PythonRuntimeLibraryVersion set to 3.11
 
 <!--
 MkDocs version : 1.6.1
-Build Date UTC : 2026-03-26 13:59:56.667175+00:00
+Build Date UTC : 2026-05-04 15:04:47.661279+00:00
 -->
