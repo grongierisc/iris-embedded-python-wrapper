@@ -79,8 +79,6 @@ def test_connect_path_enables_embedded_runtime(monkeypatch, tmp_path):
             return fake_module
         raise ModuleNotFoundError(name)
 
-    monkeypatch.setattr(_iris_ep, "_original_cls", None)
-    monkeypatch.setattr(_iris_ep, "_original_connect", None)
     monkeypatch.setattr(_iris_ep._bootstrap.importlib, "import_module", fake_import_module)
     monkeypatch.setattr(_iris_ep._bootstrap, "update_dynalib_path", dynalib_paths.append)
 
@@ -94,8 +92,6 @@ def test_connect_path_enables_embedded_runtime(monkeypatch, tmp_path):
         assert context.embedded_cls is fake_module.cls
         assert context.embedded_connect is fake_module.connect
         assert dynalib_paths == [str(install_dir / "bin")]
-        monkeypatch.setattr(_iris_ep, "_original_cls", None)
-        monkeypatch.setattr(_iris_ep, "_original_connect", None)
         assert iris.cls("User.Foo") == {"class": "User.Foo"}
         assert iris.connect(label="runtime-owned") == {
             "args": (),

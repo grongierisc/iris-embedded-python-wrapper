@@ -324,17 +324,17 @@ Output:
 
 ```bash
 (.venv) demo ‹master*›$ bind_iris
-INFO:iris_utils._find_libpyton:Created backup at /opt/intersystems/iris/iris.cpf.fa76423a7b924eb085911690c8266129
-INFO:iris_utils._find_libpyton:Created merge file at /opt/intersystems/iris/iris.cpf.python_merge
+INFO:iris_utils._find_libpython:Created backup at /opt/intersystems/iris/iris.cpf.fa76423a7b924eb085911690c8266129
+INFO:iris_utils._find_libpython:Created merge file at /opt/intersystems/iris/iris.cpf.python_merge
 up  IRIS              2024.3.0.217.0    1972   /opt/intersystems/iris
 
 Username: SuperUser
 Password: ***
 IRIS Merge of /opt/intersystems/iris/iris.cpf.python_merge into /opt/intersystems/iris/iris.cpf
 IRIS Merge completed successfully
-INFO:iris_utils._find_libpyton:PythonRuntimeLibrary path set to /usr/local/Cellar/python@3.11/3.11.10/Frameworks/Python.framework/Versions/3.11/Python
-INFO:iris_utils._find_libpyton:PythonPath set to /demo/.venv/lib/python3.11/site-packages
-INFO:iris_utils._find_libpyton:PythonRuntimeLibraryVersion set to 3.11
+INFO:iris_utils._find_libpython:PythonRuntimeLibrary path set to /usr/local/Cellar/python@3.11/3.11.10/Frameworks/Python.framework/Versions/3.11/Python
+INFO:iris_utils._find_libpython:PythonPath set to /demo/.venv/lib/python3.11/site-packages
+INFO:iris_utils._find_libpython:PythonRuntimeLibraryVersion set to 3.11
 ```
 
 You may have to put your admin credentials to bind the virtual environment to the embedded python in IRIS.
@@ -351,16 +351,16 @@ Output:
 
 ```bash
 (.venv) demo ‹master*›$ unbind_iris
-INFO:iris_utils._find_libpyton:Created merge file at /opt/intersystems/iris/iris.cpf.python_merge
+INFO:iris_utils._find_libpython:Created merge file at /opt/intersystems/iris/iris.cpf.python_merge
 up  IRIS              2024.3.0.217.0    1972   /opt/intersystems/iris
 
 Username: SuperUser
 Password: ***
 IRIS Merge of /opt/intersystems/iris/iris.cpf.python_merge into /opt/intersystems/iris/iris.cpf
 IRIS Merge completed successfully
-INFO:iris_utils._find_libpyton:PythonRuntimeLibrary path set to /usr/local/Cellar/python@3.11/3.11.10/Frameworks/Python.framework/Versions/3.11/Python
-INFO:iris_utils._find_libpyton:PythonPath set to /Other/.venv/lib/python3.11/site-packages
-INFO:iris_utils._find_libpyton:PythonRuntimeLibraryVersion set to 3.11
+INFO:iris_utils._find_libpython:PythonRuntimeLibrary path set to /usr/local/Cellar/python@3.11/3.11.10/Frameworks/Python.framework/Versions/3.11/Python
+INFO:iris_utils._find_libpython:PythonPath set to /Other/.venv/lib/python3.11/site-packages
+INFO:iris_utils._find_libpython:PythonRuntimeLibraryVersion set to 3.11
 ```
 
 # Troubleshooting

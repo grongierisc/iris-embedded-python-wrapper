@@ -74,7 +74,6 @@ def test_driver_loader_rebinds_wrapper_symbols(monkeypatch):
 
     _driver_loader.rebind_wrapper_symbols(module_globals)
 
-    assert iris_ep_module._fallback_connect is driver_connect
     assert backend_bindings == {"native_connect": driver_connect}
     assert module_globals["_driver_connect"] is driver_connect
     assert module_globals["connect"] is wrapper_connect

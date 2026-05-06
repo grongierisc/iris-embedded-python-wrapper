@@ -70,7 +70,6 @@ def rebind_wrapper_symbols(module_globals):
         return
 
     if driver_connect is not None and getattr(iris_ep_module, "connect", None) is not driver_connect:
-        iris_ep_module._fallback_connect = driver_connect
         runtime = getattr(iris_ep_module, "runtime", None)
         bind_backends = getattr(runtime, "bind_backends", None)
         if callable(bind_backends):

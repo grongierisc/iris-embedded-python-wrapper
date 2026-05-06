@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Optional, Dict, List
 from pathlib import Path
 
-from ._find_libpyton import find_libpython, is_windows, logger
+from ._find_libpython import find_libpython, is_windows, logger
 
 @dataclass
 class IrisVersion:
