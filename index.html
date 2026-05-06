@@ -70,13 +70,13 @@
               
                 <h1 id="iris-embedded-python-wrapper">iris-embedded-python-wrapper</h1>
 <p>This is a module that wraps embedded python in the IRIS Dataplateform. It provides a simple interface to run python code in IRIS.</p>
-<p>More details can be found in the <a href="https://docs.intersystems.com/iris20243/csp/docbook/DocBook.UI.Page.cls?KEY=AFL_epython">IRIS documentation</a></p>
+<p>More details can be found in the <a href="https://docs.intersystems.com/irislatest/csp/docbook/DocBook.UI.Page.cls?KEY=AFL_epython">IRIS documentation</a></p>
 <h1 id="pre-requisites">Pre-requisites</h1>
-<p>To make use of this module, you need to have the IRIS Dataplatform installed on your machine (more details can be found <a href="https://docs.intersystems.com/iris20243/csp/docbook/DocBook.UI.Page.cls?KEY=PAGE_deployment_install">here</a>).</p>
+<p>To make use of this module, you need to have the IRIS Dataplatform installed on your machine (more details can be found <a href="https://docs.intersystems.com/irislatest/csp/docbook/DocBook.UI.Page.cls?KEY=PAGE_deployment_install">here</a>).</p>
 <p>Then you must configure the <a href="#configuration-of-the-service-callin">service callin</a> to allow the python code to be executed and <a href="#environment-variables">set the environment variables</a>.</p>
 <h2 id="configuration-of-the-service-callin">Configuration of the service callin</h2>
 <p>In the Management Portal, go to System Administration &gt; Security &gt; Services, select %Service_CallIn, and check the Service Enabled box.</p>
-<p>More details can be found in the <a href="https://docs.intersystems.com/iris20243/csp/docbook/DocBook.UI.Page.cls?KEY=GEPYTHON_prereqs">IRIS documentation</a></p>
+<p>More details can be found in the <a href="https://docs.intersystems.com/irislatest/csp/docbook/DocBook.UI.Page.cls?KEY=GEPYTHON_prereqs">IRIS documentation</a></p>
 <h2 id="environment-variables">Environment Variables</h2>
 <p>Set the following environment variables :</p>
 <ul>
@@ -192,7 +192,10 @@ obj = iris.cls(&quot;Ens.StringRequest&quot;)._New()
 </code></pre>
 <p>This is useful when <code>IRISINSTALLDIR</code> is not set. On Linux and macOS, the
 native library path still needs to be configured before Python starts as shown
-in the environment setup section.</p>
+in the environment setup section.
+The path must point to an IRIS installation directory with <code>bin</code> and
+<code>lib/python</code> subdirectories; invalid paths fail before the wrapper mutates
+Python import paths or loader paths.</p>
 <p>Reset to automatic detection:</p>
 <pre><code class="language-python">import iris
 
@@ -242,9 +245,21 @@ iris.runtime.reset()
 <p><code>mode</code> is optional for DB-API.</p>
 <ul>
 <li>With explicit remote arguments (<code>hostname</code>, <code>port</code>, <code>namespace</code>, <code>username</code>, <code>password</code>, etc.), DB-API infers native.</li>
+<li>With <code>path=...</code>, DB-API configures embedded-local runtime and returns an
+  embedded DB-API connection. <code>mode</code> must be <code>auto</code> or <code>embedded</code>.</li>
 <li>With <code>iris.runtime.configure(dbapi=conn)</code>, DB-API auto mode reuses the bound native connection.</li>
 <li>Without remote arguments or a bound runtime DB-API connection, DB-API auto mode uses embedded unless <code>iris.runtime</code> is explicitly in native mode.</li>
 </ul>
+<p><code>iris.connect(path=...)</code> and <code>iris.dbapi.connect(path=...)</code> share the same
+embedded runtime configuration behavior, but return different things:</p>
+<ul>
+<li><code>iris.connect(path=...)</code> returns the <code>RuntimeContext</code></li>
+<li><code>iris.dbapi.connect(path=...)</code> returns a DB-API connection</li>
+</ul>
+<p><code>iris.dbapi.connect(path=...)</code> accepts embedded DB-API options such as
+<code>namespace=...</code> and <code>isolation_level=...</code>. It rejects native mode and native
+connection arguments such as <code>hostname</code>, <code>port</code>, <code>username</code>, and <code>password</code>.
+The path is validated with the same rules as <code>iris.connect(path=...)</code>.</p>
 <h3 id="examples_1">Examples</h3>
 <p>Embedded mode:</p>
 <pre><code class="language-python">import iris
@@ -255,6 +270,14 @@ cur.execute(&quot;SELECT Name FROM Sample.Person&quot;)
 rows = cur.fetchall()
 cur.close()
 conn.close()
+</code></pre>
+<p>Embedded-local mode with an explicit IRIS installation directory:</p>
+<pre><code class="language-python">import iris
+
+conn = iris.dbapi.connect(path=&quot;/opt/iris&quot;, namespace=&quot;USER&quot;)
+cur = conn.cursor()
+cur.execute(&quot;SELECT 1&quot;)
+print(cur.fetchone())
 </code></pre>
 <p>Native mode:</p>
 <pre><code class="language-python">import iris
@@ -390,5 +413,5 @@ INFO:iris_utils._find_libpython:PythonRuntimeLibraryVersion set to 3.11
 
 <!--
 MkDocs version : 1.6.1
-Build Date UTC : 2026-05-06 15:04:46.522921+00:00
+Build Date UTC : 2026-05-06 15:39:52.562653+00:00
 -->
