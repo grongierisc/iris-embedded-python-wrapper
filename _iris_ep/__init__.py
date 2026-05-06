@@ -15,22 +15,32 @@ from iris_utils import NativeClassProxy, runtime as _runtime_manager, update_dyn
 # ISC_PACKAGE_INSTALLDIR - defined by default in Docker images
 installdir = os.environ.get('IRISINSTALLDIR') or os.environ.get('ISC_PACKAGE_INSTALLDIR')
 __sysversion_info = sys.version_info
-__syspath = sys.path
 __osname = os.name
 
 _runtime_manager.configure(install_dir=installdir)
 
-if installdir is None:
-    logging.warning("IRISINSTALLDIR or ISC_PACKAGE_INSTALLDIR environment variable must be set")
-    logging.warning("Embedded Python not available")
-else:
-    # join the install dir with the bin directory
-    __syspath.append(os.path.join(installdir, 'bin'))
-    # also append lib/python
-    __syspath.append(os.path.join(installdir, 'lib', 'python'))
+def _configure_install_dir(path):
+    if not path:
+        raise ValueError("path must be a non-empty IRIS installation directory")
 
-    # update the dynalib path
-    update_dynalib_path(os.path.join(installdir, 'bin'))
+    install_dir = os.path.abspath(os.fspath(path))
+    bin_dir = os.path.join(install_dir, 'bin')
+    python_dir = os.path.join(install_dir, 'lib', 'python')
+
+    if bin_dir not in sys.path:
+        sys.path.append(bin_dir)
+    if python_dir not in sys.path:
+        sys.path.append(python_dir)
+
+    update_dynalib_path(bin_dir)
+    return install_dir
+
+
+if installdir is None:
+    logging.warning("IRISINSTALLDIR or ISC_PACKAGE_INSTALLDIR environment variable is not set")
+    logging.warning("Embedded Python not configured; call iris.connect(path=...) to configure it")
+else:
+    _configure_install_dir(installdir)
 
 # save working directory
 __ospath = os.getcwd()
@@ -96,6 +106,60 @@ else:
 
 # Wrap the 'cls' function to support Native API when Embedded Python isn't available
 _original_cls = globals().get('cls')
+_original_connect = globals().get('connect')
+_fallback_connect = None
+
+def _get_pythonint_module_name():
+    if __osname == 'nt':
+        windows_modules = {
+            9: 'pythonint39',
+            10: 'pythonint310',
+            11: 'pythonint311',
+            12: 'pythonint312',
+            13: 'pythonint313',
+            14: 'pythonint314',
+        }
+        return windows_modules.get(__sysversion_info.minor)
+    return 'pythonint'
+
+
+def _install_embedded_module(module):
+    global _original_cls, _original_connect
+
+    wrapper_cls = globals().get('cls')
+    wrapper_connect = globals().get('connect')
+    runtime_obj = globals().get('runtime')
+    dbapi_obj = globals().get('dbapi')
+    embedded_cls = getattr(module, 'cls', None)
+    embedded_connect = getattr(module, 'connect', None)
+
+    globals().update(module.__dict__)
+    _original_cls = embedded_cls
+    _original_connect = embedded_connect
+
+    if callable(wrapper_cls):
+        globals()['cls'] = wrapper_cls
+    if callable(wrapper_connect):
+        globals()['connect'] = wrapper_connect
+    if runtime_obj is not None:
+        globals()['runtime'] = runtime_obj
+    if dbapi_obj is not None:
+        globals()['dbapi'] = dbapi_obj
+
+
+def _load_embedded_backend(path):
+    install_dir = _configure_install_dir(path)
+    module_name = _get_pythonint_module_name()
+    if module_name is None:
+        raise RuntimeError(f"Embedded Python is not available for Python {sys.version_info.major}.{sys.version_info.minor}")
+
+    try:
+        module = importlib.import_module(name=module_name)
+    except ModuleNotFoundError:
+        module = importlib.import_module(name='pythonint')
+
+    _install_embedded_module(module)
+    return _runtime_manager.configure(mode='embedded', install_dir=install_dir)
 
 def cls(class_name):
     current_runtime = _runtime_manager.get()
@@ -114,6 +178,19 @@ def cls(class_name):
     logging.warning("No Embedded Python or Native API connection available.")
     from unittest.mock import MagicMock
     return MagicMock()
+
+
+def connect(*args, path=None, **kwargs):
+    if path is not None:
+        if args or kwargs:
+            raise TypeError("iris.connect(path=...) cannot be combined with native connection arguments")
+        return _load_embedded_backend(path)
+
+    if callable(_fallback_connect):
+        return _fallback_connect(*args, **kwargs)
+    if callable(_original_connect):
+        return _original_connect(*args, **kwargs)
+    raise RuntimeError("iris.connect requires path=... for embedded mode or an installed native driver")
 
 
 class _RuntimeNamespace:
@@ -233,7 +310,7 @@ if isinstance(_existing_all, (list, tuple, set)):
 else:
     _exported_names = [name for name in globals() if not name.startswith("_")]
 
-for _name in ("runtime", "dbapi", "cls"):
+for _name in ("runtime", "dbapi", "cls", "connect"):
     if _name not in _exported_names:
         _exported_names.append(_name)
 
@@ -241,4 +318,3 @@ globals()["__all__"] = _exported_names
         
 # restore working directory
 os.chdir(__ospath)
-

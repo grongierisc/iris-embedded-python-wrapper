@@ -166,6 +166,19 @@ iris.runtime.configure(mode="embedded")
 obj = iris.cls("Ens.StringRequest")._New()
 ```
 
+Enable embedded routing with an explicit IRIS installation directory:
+
+```python
+import iris
+
+iris.connect(path="/opt/iris")
+obj = iris.cls("Ens.StringRequest")._New()
+```
+
+This is useful when `IRISINSTALLDIR` is not set. On Linux and macOS, the
+native library path still needs to be configured before Python starts as shown
+in the environment setup section.
+
 Reset to automatic detection:
 
 ```python

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Iterator, List, Optional, Tuple
+from typing import Any, Iterator, List, Optional, Tuple, Union, overload
 
 from . import iris_ipm
 
@@ -47,6 +47,14 @@ class IRIS:
     def iterator(self, global_name: str, *subscripts: Any) -> Iterator[Any]:
         """Return an iterator over subscripts of a global node."""
 
+@overload
+def connect(*, path: Union[os.PathLike[str], str]) -> RuntimeContext:
+    """
+    Configure the wrapper for embedded-local IRIS runtime using an explicit
+    IRIS installation directory. Example: iris.connect(path="/opt/iris")
+    """
+
+@overload
 def connect(
     hostname: str,
     port: int,
@@ -382,4 +390,3 @@ class _System:
         """Provides access to the InterSystems IRIS Version API."""
 
 system: _System
-

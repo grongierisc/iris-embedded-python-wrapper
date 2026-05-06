@@ -1,6 +1,8 @@
 import iris
+import _iris_ep
 import os
 import pytest
+import types
 
 def test_import_iris():
     import iris
@@ -57,3 +59,43 @@ def test_runtime_reconfigure_clears_native_handles():
     assert iris.runtime.dbapi is None
 
     iris.runtime.reset()
+
+
+def test_connect_path_enables_embedded_runtime(monkeypatch, tmp_path):
+    iris.runtime.reset()
+
+    install_dir = tmp_path / "iris"
+    (install_dir / "bin").mkdir(parents=True)
+    (install_dir / "lib" / "python").mkdir(parents=True)
+    dynalib_paths = []
+
+    fake_module = types.SimpleNamespace(
+        cls=lambda class_name: {"class": class_name},
+        connect=lambda *args, **kwargs: {"args": args, "kwargs": kwargs},
+    )
+
+    def fake_import_module(name):
+        if name == "pythonint":
+            return fake_module
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(_iris_ep, "_original_cls", None)
+    monkeypatch.setattr(_iris_ep, "_original_connect", None)
+    monkeypatch.setattr(_iris_ep.importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(_iris_ep, "update_dynalib_path", dynalib_paths.append)
+
+    try:
+        context = iris.connect(path=install_dir)
+
+        assert context.mode == "embedded"
+        assert context.install_dir == str(install_dir)
+        assert context.embedded_available is True
+        assert dynalib_paths == [str(install_dir / "bin")]
+        assert iris.cls("User.Foo") == {"class": "User.Foo"}
+    finally:
+        iris.runtime.reset()
+
+
+def test_connect_path_rejects_native_arguments(tmp_path):
+    with pytest.raises(TypeError, match="path"):
+        iris.connect("localhost", path=tmp_path)

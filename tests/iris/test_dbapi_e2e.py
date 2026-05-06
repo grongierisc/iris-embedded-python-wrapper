@@ -1,4 +1,6 @@
 import os
+import subprocess
+import sys
 from functools import lru_cache
 
 import pytest
@@ -91,6 +93,41 @@ def test_dbapi_e2e_embedded_select_one_default_connect():
     finally:
         cur.close()
         conn.close()
+
+
+def test_connect_path_e2e_enables_embedded_without_install_env():
+    _require_embedded_runtime()
+
+    install_dir = (
+        os.getenv("IRISINSTALLDIR")
+        or os.getenv("ISC_PACKAGE_INSTALLDIR")
+        or "/usr/irissys"
+    )
+    env = os.environ.copy()
+    env.pop("IRISINSTALLDIR", None)
+    env.pop("ISC_PACKAGE_INSTALLDIR", None)
+
+    script = f"""
+import iris
+
+ctx = iris.connect(path={install_dir!r})
+assert ctx.mode == "embedded"
+assert ctx.install_dir == {install_dir!r}
+assert ctx.embedded_available is True
+version = iris.cls("%SYSTEM.Version").GetVersion()
+assert version
+print(version)
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.fixture(params=_dbapi_modes())

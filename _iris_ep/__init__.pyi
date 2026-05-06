@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Iterator, List, Optional, Tuple
+from typing import Any, Iterator, List, Optional, Tuple, Union, overload
 
 from . import iris_ipm
 from .iris_ipm import ipm
 
 __all__ = [
-    'check_status', 'cls', 'createConnection', 'createIRIS', 'dbapi', 'execute', 'gref', 'ipm', 'iris_ipm',
+    'check_status', 'cls', 'connect', 'createConnection', 'createIRIS', 'dbapi', 'execute', 'gref', 'ipm', 'iris_ipm',
     'lock', 'os', 'ref', 'routine', 'runtime', 'sql', 'system',
     'tcommit', 'tlevel', 'trollback', 'trollbackone', 'tstart', 'unlock', 'utils',
 ]
@@ -47,6 +47,17 @@ class IRIS:
         """Release a lock on an IRIS resource."""
     def iterator(self, global_name: str, *subscripts: Any) -> Iterator[Any]:
         """Return an iterator over subscripts of a global node."""
+
+@overload
+def connect(*, path: Union[os.PathLike[str], str]) -> RuntimeContext:
+    """
+    Configure the wrapper for embedded-local IRIS runtime using an explicit
+    IRIS installation directory. Example: iris.connect(path="/opt/iris")
+    """
+
+@overload
+def connect(*args: Any, **kwargs: Any) -> Any:
+    """Delegate to the available native driver connect function."""
 
 def createConnection(
     hostname: str,
@@ -367,4 +378,3 @@ class _System:
         """Provides access to the InterSystems IRIS Version API."""
 
 system: _System
-
