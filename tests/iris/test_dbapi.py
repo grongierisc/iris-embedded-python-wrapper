@@ -1,6 +1,7 @@
 import iris_embedded_python as iris
 import _iris_ep
 import _iris_ep._dbapi as embedded_dbapi
+import _iris_ep._dbapi_native as native_dbapi_loader
 import pytest
 import sys
 import types
@@ -708,7 +709,7 @@ def test_dbapi_native_uses_official_iris_dbapi(monkeypatch):
             return FakeNativeDBAPI
         raise ImportError(name)
 
-    monkeypatch.setattr(embedded_dbapi.importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(native_dbapi_loader.importlib, "import_module", fake_import_module)
 
     conn = iris.dbapi.connect(mode="native", hostname="localhost", port=1972)
 
@@ -736,7 +737,7 @@ def test_dbapi_native_import_preserves_public_facade(monkeypatch):
         raise ImportError(name)
 
     monkeypatch.setitem(sys.modules, "iris", parent_module)
-    monkeypatch.setattr(embedded_dbapi.importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(native_dbapi_loader.importlib, "import_module", fake_import_module)
 
     conn = facade.connect(mode="native", hostname="localhost", port=1972)
 
@@ -767,7 +768,7 @@ def test_dbapi_native_import_falls_back_to_installed_distribution(monkeypatch, t
     monkeypatch.setitem(sys.modules, "iris", facade)
     monkeypatch.delitem(sys.modules, "iris.dbapi", raising=False)
     monkeypatch.setattr(
-        embedded_dbapi.importlib.metadata,
+        native_dbapi_loader.importlib.metadata,
         "distribution",
         lambda name: FakeDistribution(),
     )
@@ -787,12 +788,12 @@ def test_dbapi_native_errors_when_official_module_missing(monkeypatch):
     def fake_import_module(name):
         raise ImportError(name)
 
-    monkeypatch.setattr(embedded_dbapi.importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(native_dbapi_loader.importlib, "import_module", fake_import_module)
     monkeypatch.setattr(
-        embedded_dbapi.importlib.metadata,
+        native_dbapi_loader.importlib.metadata,
         "distribution",
         lambda name: (_ for _ in ()).throw(
-            embedded_dbapi.importlib.metadata.PackageNotFoundError(name)
+            native_dbapi_loader.importlib.metadata.PackageNotFoundError(name)
         ),
     )
 
