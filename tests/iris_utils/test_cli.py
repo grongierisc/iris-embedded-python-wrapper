@@ -1,9 +1,17 @@
 from pathlib import Path
-from unittest.mock import MagicMock
 import sys
 import pytest
 import iris_utils._iris_utils as runtime_utils
-from iris_utils._cli import IrisConfigManager, IrisVersion, python_version_string, unbind, bind
+from iris_utils._cli import IrisConfigManager, IrisVersion, PythonConfig, python_version_string
+
+
+@pytest.fixture(autouse=True)
+def block_real_iris_merge(monkeypatch):
+    def fail_merge(_manager):
+        pytest.fail("Unit tests must not run real 'iris merge'")
+
+    monkeypatch.setattr(IrisConfigManager, "_merge_cpf_to_iris", fail_merge)
+
 
 @pytest.fixture
 def mock_env(monkeypatch, tmp_path):
@@ -28,6 +36,7 @@ ModifyConfig:PythonPath=tot
     
     monkeypatch.setenv("IRISINSTALLDIR", str(iris_dir))
     monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "venv"))
+    monkeypatch.delenv("ISC_CPF_MERGE_FILE", raising=False)
     return iris_dir
 
 def test_init(mock_env):
@@ -68,12 +77,10 @@ def test_create_config_linux(mock_env, monkeypatch):
     monkeypatch.setattr("iris_utils._cli.is_windows", False)
 
     manager = IrisConfigManager()
-    manager._get_iris_instance_name = MagicMock(return_value="IRIS")
-    manager._merge_cpf_to_iris = MagicMock()
     test_lib = "/test/libpython.so"
+    config = PythonConfig(runtime=test_lib, path=manager.python_path)
     
-    manager.update_config(test_lib)
-    manager._merge_cpf_to_iris.assert_called_once()
+    manager._create_new_merge_file(config)
     
     # open the merged cpf file
     _merge_file = Path(f"{manager.cpf_path}.{manager._merge_cpf_suffix}")
@@ -85,10 +92,9 @@ def test_create_config_linux(mock_env, monkeypatch):
 
 def test_update_config_linux(mock_env, monkeypatch):
     monkeypatch.setattr("iris_utils._cli.is_windows", False)
-    monkeypatch.setenv("ISC_CPF_MERGE_FILE", mock_env / "merge_with_settings.cpf")
+    monkeypatch.setenv("ISC_CPF_MERGE_FILE", str(mock_env / "merge_with_settings.cpf"))
 
     manager = IrisConfigManager()
-    manager._get_iris_instance_name = MagicMock(return_value="IRIS")
     test_lib = "/test/libpython.so"
     
     manager.update_config(test_lib)

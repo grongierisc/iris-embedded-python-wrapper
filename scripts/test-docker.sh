@@ -10,6 +10,23 @@ else
   PYTEST_ARGS=("$@")
 fi
 
+ENV_ARGS=()
+for name in \
+  IRIS_HOST \
+  IRIS_PORT \
+  IRISNAMESPACE \
+  IRISUSERNAME \
+  IRISPASSWORD \
+  IRIS_E2E_MODES \
+  IRIS_REQUIRE_EMBEDDED \
+  IRIS_REQUIRE_EMBEDDED_SQL \
+  IRIS_RUN_KERNEL_TEST
+do
+  if [ -n "${!name+x}" ]; then
+    ENV_ARGS+=("-e" "$name=${!name}")
+  fi
+done
+
 if docker compose version >/dev/null 2>&1; then
   COMPOSE=(docker compose)
 elif command -v docker-compose >/dev/null 2>&1; then
@@ -31,13 +48,6 @@ docker exec "$CONTAINER_ID" bash -lc 'if [ -x /usr/irissys/dev/Container/waitRea
 docker exec "$CONTAINER_ID" iris session iris -U%SYS '##class(Security.Users).UnExpireUserPasswords("*")'
 
 docker exec \
-  -e IRIS_HOST=localhost \
-  -e IRIS_PORT=1972 \
-  -e IRISNAMESPACE=USER \
-  -e IRISUSERNAME=_SYSTEM \
-  -e IRISPASSWORD=SYS \
-  -e IRIS_E2E_MODES="${IRIS_E2E_MODES:-embedded,remote}" \
-  -e IRIS_REQUIRE_EMBEDDED="${IRIS_REQUIRE_EMBEDDED:-1}" \
-  -e IRIS_REQUIRE_EMBEDDED_SQL="${IRIS_REQUIRE_EMBEDDED_SQL:-1}" \
+  "${ENV_ARGS[@]}" \
   "$CONTAINER_ID" \
   bash -lc 'cd /irisdev/app && ./scripts/run-pytest-in-iris.sh "$@"' test-docker "${PYTEST_ARGS[@]}"

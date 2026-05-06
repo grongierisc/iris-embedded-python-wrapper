@@ -47,7 +47,6 @@ For windows, you can set the environment variables as follows:
     
 ```bash
 set IRISINSTALLDIR=C:\path\to\iris
-set LD_LIBRARY_PATH=%IRISINSTALLDIR%\bin;%LD_LIBRARY_PATH%
 ```
 
 For Python 3.8 and newer, the wrapper automatically registers the IRIS `bin`
@@ -86,7 +85,36 @@ pip install iris-embedded-python-wrapper
 
 ## Running tests
 
-Run the test suite in Docker with the vanilla official InterSystems IRIS community image:
+### Local `.venv`
+
+For pure unit tests, use the project virtual environment and keep CPF merge
+tests on temporary files:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -e . pytest
+env -u ISC_CPF_MERGE_FILE python -m pytest tests -q
+```
+
+Embedded-local e2e tests from `python3` also need an IRIS installation and the
+platform loader path configured before Python starts:
+
+```bash
+export IRISINSTALLDIR=/opt/iris
+export LD_LIBRARY_PATH=$IRISINSTALLDIR/bin:$LD_LIBRARY_PATH
+python -m pytest tests/iris/test_dbapi_e2e.py -q
+```
+
+On macOS use `DYLD_LIBRARY_PATH` where your shell and Python launcher allow it.
+On Windows, the wrapper registers the IRIS `bin` directory with
+`os.add_dll_directory()` when `IRISINSTALLDIR` is set.
+
+### Docker
+
+Run the test suite in Docker with the vanilla official InterSystems IRIS
+community image:
 
 ```bash
 ./scripts/test-docker.sh
@@ -98,7 +126,22 @@ Pass any pytest selector or option after the script name:
 ./scripts/test-docker.sh tests/iris/test_dbapi.py -q
 ```
 
-The script starts `docker-compose-test-preview.yml`, waits for IRIS, unlocks the default test passwords, sets `LD_LIBRARY_PATH=$IRISINSTALLDIR/bin:$LD_LIBRARY_PATH` as documented above, creates a Python virtual environment inside the IRIS container, installs this package, and runs `python3 -m pytest`. By default `IRIS_E2E_MODES=embedded,remote`, so remote DB-API e2e tests run and the embedded runtime plus embedded DB-API SQL are required from `python3`.
+`scripts/test-docker.sh` starts `docker-compose-test-preview.yml`, waits for
+IRIS, unlocks the default test passwords, and then delegates pytest execution to
+`scripts/run-pytest-in-iris.sh`. The in-container runner is the single source of
+truth for GitHub Actions and local Docker runs.
+
+The container test flow is source-based:
+
+- the repository is mounted at `/irisdev/app` read-only
+- `PYTHONPATH=/irisdev/app` exposes the working tree
+- the test virtual environment is created under `/tmp`
+- pytest bytecode/cache writes are disabled
+- `ISC_CPF_MERGE_FILE` is unset before pytest so tests cannot rewrite the repo
+  merge file
+
+By default `IRIS_E2E_MODES=embedded,remote`, so remote DB-API e2e tests run and
+the embedded runtime plus embedded DB-API SQL are required from `python3`.
 
 To test another IRIS image tag:
 
@@ -132,6 +175,37 @@ Output:
 ## Unified runtime context
 
 The wrapper now uses a unified runtime API through `iris.runtime`.
+
+### Embedded runtime
+
+The wrapper can run in two embedded contexts:
+
+- `embedded-kernel`: Python is launched by IRIS, for example with
+  `iris python iris` or `iris session iris` followed by `:py`
+- `embedded-local`: regular `python3` loads the IRIS embedded Python libraries
+  from an installed IRIS instance
+
+In `embedded-kernel`, IRIS has already loaded the runtime. Set `PYTHONPATH` to
+the project or installed package location when you need the wrapper instead of
+the built-in `iris` module:
+
+```bash
+PYTHONPATH=/path/to/iris-embedded-python-wrapper iris python iris
+```
+
+For an interactive session:
+
+```bash
+PYTHONPATH=/path/to/iris-embedded-python-wrapper iris session iris
+USER>:py
+>>> import iris
+>>> iris.runtime.get().state
+'embedded-kernel'
+```
+
+In `embedded-local`, configure the IRIS install directory and loader path before
+starting Python, or provide the install directory at runtime with
+`iris.connect(path=...)` as described below.
 
 ### Runtime model
 
@@ -198,7 +272,8 @@ obj = iris.cls("Ens.StringRequest")._New()
 
 This is useful when `IRISINSTALLDIR` is not set. On Linux and macOS, the
 native library path still needs to be configured before Python starts as shown
-in the environment setup section.
+in the environment setup section; `path=...` configures the wrapper, but it
+cannot change Unix dynamic loader resolution for already-started processes.
 
 Reset to automatic detection:
 

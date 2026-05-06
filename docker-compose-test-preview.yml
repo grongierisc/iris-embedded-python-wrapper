@@ -9,7 +9,7 @@ services:
       - "${IRIS_WEB_PORT:-52773}"
       - "${IRIS_PRIVATE_WEB_PORT:-53773}"
     volumes:
-      - ./:/irisdev/app
+      - ./:/irisdev/app:ro
     healthcheck:
       test: ["CMD-SHELL", "test -x /usr/irissys/dev/Container/waitReady.sh && /usr/irissys/dev/Container/waitReady.sh -m 5 || /usr/irissys/dev/Cloud/ICM/waitReady.sh -m 5"]
       interval: 10s
