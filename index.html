@@ -102,7 +102,10 @@ export IRISNAMESPACE=USER
 <pre><code class="language-bash">set IRISINSTALLDIR=C:\path\to\iris
 set LD_LIBRARY_PATH=%IRISINSTALLDIR%\bin;%LD_LIBRARY_PATH%
 </code></pre>
-<p>Update the library path for windows</p>
+<p>For Python 3.8 and newer, the wrapper automatically registers the IRIS <code>bin</code>
+directory with <code>os.add_dll_directory()</code> when <code>IRISINSTALLDIR</code> is set. Update
+<code>PATH</code> only when using older Python versions or external tools that need IRIS
+DLLs:</p>
 <pre><code class="language-bash">set PATH=%IRISINSTALLDIR%\bin;%PATH%
 </code></pre>
 <p>Set the IRIS username, password, and namespace</p>
@@ -113,7 +116,6 @@ set IRISNAMESPACE=USER
 <h3 id="for-powershell">For PowerShell</h3>
 <p>For PowerShell, you can set the environment variables as follows:</p>
 <pre><code class="language-powershell">$env:IRISINSTALLDIR=&quot;C:\path\to\iris&quot;
-$env:PATH=&quot;$env:IRISINSTALLDIR\bin;$env:PATH&quot;
 $env:IRISUSERNAME=&quot;SuperUser&quot;
 $env:IRISPASSWORD=&quot;SYS&quot;
 $env:IRISNAMESPACE=&quot;USER&quot;
@@ -182,6 +184,15 @@ obj = iris.cls(&quot;Ens.StringRequest&quot;)._New()
 iris.runtime.configure(mode=&quot;embedded&quot;)
 obj = iris.cls(&quot;Ens.StringRequest&quot;)._New()
 </code></pre>
+<p>Enable embedded routing with an explicit IRIS installation directory:</p>
+<pre><code class="language-python">import iris
+
+iris.connect(path=&quot;/opt/iris&quot;)
+obj = iris.cls(&quot;Ens.StringRequest&quot;)._New()
+</code></pre>
+<p>This is useful when <code>IRISINSTALLDIR</code> is not set. On Linux and macOS, the
+native library path still needs to be configured before Python starts as shown
+in the environment setup section.</p>
 <p>Reset to automatic detection:</p>
 <pre><code class="language-python">import iris
 
@@ -379,5 +390,5 @@ INFO:iris_utils._find_libpyton:PythonRuntimeLibraryVersion set to 3.11
 
 <!--
 MkDocs version : 1.6.1
-Build Date UTC : 2026-05-04 15:04:47.661279+00:00
+Build Date UTC : 2026-05-06 13:04:44.665569+00:00
 -->
