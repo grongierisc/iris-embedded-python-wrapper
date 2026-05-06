@@ -81,11 +81,19 @@
 <p>Set the following environment variables :</p>
 <ul>
 <li>IRISINSTALLDIR: The path to the IRIS installation directory</li>
-<li>LD_LIBRARY_PATH: The path to the IRIS library</li>
+<li>LD_LIBRARY_PATH: The Linux loader path for IRIS shared libraries</li>
+<li>DYLD_LIBRARY_PATH: The macOS loader path for IRIS shared libraries</li>
 <li>IRISUSERNAME: The username to connect to IRIS</li>
 <li>IRISPASSWORD: The password to connect to IRIS</li>
 <li>IRISNAMESPACE: The namespace to connect to IRIS</li>
 </ul>
+<p>Embedded-local execution from regular <code>python3</code> on Unix needs the loader path
+configured before Python starts. <code>iris.connect(path=...)</code> can configure Python
+import paths at runtime, but it cannot repair Unix dynamic loader resolution
+after startup. When embedded-local is configured through <code>IRISINSTALLDIR</code>,
+<code>ISC_PACKAGE_INSTALLDIR</code>, or <code>path=...</code>, the wrapper emits a <code>RuntimeWarning</code>
+on Unix if the loader-path variable does not already include the IRIS <code>bin</code>
+directory.</p>
 <h3 id="for-linux-and-macos">For Linux and MacOS</h3>
 <p>For Linux and MacOS, you can set the environment variables as follows:</p>
 <pre><code class="language-bash">export IRISINSTALLDIR=/opt/iris
@@ -195,7 +203,14 @@ native library path still needs to be configured before Python starts as shown
 in the environment setup section.
 The path must point to an IRIS installation directory with <code>bin</code> and
 <code>lib/python</code> subdirectories; invalid paths fail before the wrapper mutates
-Python import paths or loader paths.</p>
+Python import paths or loader paths. For explicit <code>path=...</code>, the wrapper also
+removes stale <code>pythonint</code> modules for the import attempt and verifies that the
+loaded <code>pythonint.__file__</code> is under that installation's <code>bin</code> or <code>lib/python</code>
+directory.</p>
+<p><code>iris.connect(path=...)</code> returns the runtime context. If the loaded embedded
+backend does not expose a callable <code>connect</code>, the wrapper emits a
+<code>RuntimeWarning</code>; use <code>iris.dbapi.connect(path=...)</code> when you want a DB-API
+connection in one call.</p>
 <p>Reset to automatic detection:</p>
 <pre><code class="language-python">import iris
 
@@ -365,7 +380,16 @@ INFO:iris_utils._find_libpython:PythonRuntimeLibraryVersion set to 3.11
 <h1 id="troubleshooting">Troubleshooting</h1>
 <p>You may encounter the following error, here is how to fix them.</p>
 <h2 id="no-module-named-pythonint">No module named 'pythonint'</h2>
-<p>This can occur when the environment variable <code>IRISINSTALLDIR</code> is not set correctly. Make sure that the path is correct.</p>
+<p>This usually means the wrapper cannot find the IRIS embedded Python extension.
+Check that <code>IRISINSTALLDIR</code> or <code>path=...</code> points to the IRIS installation
+directory and that it contains both <code>bin</code> and <code>lib/python</code>.</p>
+<p>If the error mentions IRIS shared libraries, configure the platform loader path
+before Python starts:</p>
+<pre><code class="language-bash">export IRISINSTALLDIR=/opt/iris
+export LD_LIBRARY_PATH=$IRISINSTALLDIR/bin:$LD_LIBRARY_PATH
+# macOS
+export DYLD_LIBRARY_PATH=$IRISINSTALLDIR/bin:$DYLD_LIBRARY_PATH
+</code></pre>
 <h2 id="iris_accessdenied-15">IRIS_ACCESSDENIED (-15)</h2>
 <p>This can occur when the service callin is not enabled. Make sure that the service callin is enabled.</p>
 <h2 id="iris_attach-21">IRIS_ATTACH (-21)</h2>
@@ -413,5 +437,5 @@ INFO:iris_utils._find_libpython:PythonRuntimeLibraryVersion set to 3.11
 
 <!--
 MkDocs version : 1.6.1
-Build Date UTC : 2026-05-06 15:39:52.562653+00:00
+Build Date UTC : 2026-05-06 16:01:27.772599+00:00
 -->
