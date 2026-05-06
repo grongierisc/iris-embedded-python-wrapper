@@ -9,6 +9,8 @@ IRIS_INSTALL_DIR="${IRISINSTALLDIR:-${ISC_PACKAGE_INSTALLDIR:-/usr/irissys}}"
 export IRISINSTALLDIR="${IRISINSTALLDIR:-$IRIS_INSTALL_DIR}"
 export LD_LIBRARY_PATH="${IRIS_INSTALL_DIR}/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export PYTHONPATH="${APP_DIR}${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONDONTWRITEBYTECODE=1
+export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:+$PYTEST_ADDOPTS }-p no:cacheprovider"
 
 cd "$APP_DIR"
 
@@ -20,7 +22,22 @@ unset ISC_CPF_MERGE_FILE
 . "$VENV_DIR/bin/activate"
 
 python3 -m pip install --upgrade pip setuptools wheel
-python3 -m pip install -e . pytest
+python3 - <<'PY'
+import subprocess
+import sys
+
+try:
+    import tomllib
+except ModuleNotFoundError as exc:
+    raise RuntimeError("Python 3.11+ is required to read pyproject.toml in this test runner") from exc
+
+with open("pyproject.toml", "rb") as pyproject_file:
+    dependencies = tomllib.load(pyproject_file).get("project", {}).get("dependencies", [])
+
+if dependencies:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", *dependencies])
+PY
+python3 -m pip install pytest
 
 export IRIS_HOST="${IRIS_HOST:-localhost}"
 export IRIS_PORT="${IRIS_PORT:-1972}"
