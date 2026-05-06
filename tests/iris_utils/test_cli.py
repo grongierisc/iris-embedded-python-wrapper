@@ -2,6 +2,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 import sys
 import pytest
+import iris_utils._iris_utils as runtime_utils
 from iris_utils._cli import IrisConfigManager, IrisVersion, python_version_string, unbind, bind
 
 @pytest.fixture
@@ -125,3 +126,28 @@ def test_python_version_string_uses_major_minor_only():
 def test_get_python_path_uses_major_minor_only(mock_env):
     manager = IrisConfigManager()
     assert manager.python_path.endswith(f"lib/python{python_version_string()}/site-packages")
+
+
+def test_update_dynalib_path_windows_adds_dll_directory(monkeypatch):
+    dynalib_path = r"C:\InterSystems\IRIS\bin"
+    calls = []
+    handles = []
+
+    def fake_add_dll_directory(path):
+        calls.append(path)
+        handle = object()
+        handles.append(handle)
+        return handle
+
+    monkeypatch.setattr(runtime_utils.sys, "platform", "win32")
+    monkeypatch.setattr(runtime_utils.os, "add_dll_directory", fake_add_dll_directory, raising=False)
+    monkeypatch.setattr(runtime_utils, "_DLL_DIRECTORY_HANDLES", [])
+    monkeypatch.setattr(runtime_utils, "_DLL_DIRECTORY_PATHS", set())
+    monkeypatch.setenv("PATH", r"C:\Windows")
+
+    runtime_utils.update_dynalib_path(dynalib_path)
+    runtime_utils.update_dynalib_path(dynalib_path)
+
+    assert calls == [dynalib_path]
+    assert runtime_utils._DLL_DIRECTORY_HANDLES == handles
+    assert dynalib_path in runtime_utils.os.environ["PATH"]

@@ -37,5 +37,7 @@ docker exec \
   -e IRISUSERNAME=_SYSTEM \
   -e IRISPASSWORD=SYS \
   -e IRIS_E2E_MODES="${IRIS_E2E_MODES:-embedded,remote}" \
+  -e IRIS_REQUIRE_EMBEDDED="${IRIS_REQUIRE_EMBEDDED:-1}" \
+  -e IRIS_REQUIRE_EMBEDDED_SQL="${IRIS_REQUIRE_EMBEDDED_SQL:-1}" \
   "$CONTAINER_ID" \
   bash -lc 'cd /irisdev/app && ./scripts/run-pytest-in-iris.sh "$@"' test-docker "${PYTEST_ARGS[@]}"

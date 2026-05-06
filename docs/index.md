@@ -50,7 +50,10 @@ set IRISINSTALLDIR=C:\path\to\iris
 set LD_LIBRARY_PATH=%IRISINSTALLDIR%\bin;%LD_LIBRARY_PATH%
 ```
 
-Update the library path for windows
+For Python 3.8 and newer, the wrapper automatically registers the IRIS `bin`
+directory with `os.add_dll_directory()` when `IRISINSTALLDIR` is set. Update
+`PATH` only when using older Python versions or external tools that need IRIS
+DLLs:
 
 ```bash
 set PATH=%IRISINSTALLDIR%\bin;%PATH%
@@ -70,7 +73,6 @@ For PowerShell, you can set the environment variables as follows:
 
 ```powershell
 $env:IRISINSTALLDIR="C:\path\to\iris"
-$env:PATH="$env:IRISINSTALLDIR\bin;$env:PATH"
 $env:IRISUSERNAME="SuperUser"
 $env:IRISPASSWORD="SYS"
 $env:IRISNAMESPACE="USER"

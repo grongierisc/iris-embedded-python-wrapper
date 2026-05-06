@@ -52,6 +52,7 @@ jobs:
           IRISPASSWORD: SYS
           IRIS_E2E_MODES: embedded,remote
           IRIS_REQUIRE_EMBEDDED: 1
+          IRIS_REQUIRE_EMBEDDED_SQL: 1
         run: |
           docker exec \
             -e IRIS_HOST=localhost \
@@ -61,6 +62,7 @@ jobs:
             -e IRISPASSWORD=SYS \
             -e IRIS_E2E_MODES=embedded,remote \
             -e IRIS_REQUIRE_EMBEDDED=1 \
+            -e IRIS_REQUIRE_EMBEDDED_SQL=1 \
             iris \
             bash -lc 'cd /irisdev/app && ./scripts/run-pytest-in-iris.sh --junit-xml=/tmp/test-results.xml'
 

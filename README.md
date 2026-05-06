@@ -50,7 +50,10 @@ set IRISINSTALLDIR=C:\path\to\iris
 set LD_LIBRARY_PATH=%IRISINSTALLDIR%\bin;%LD_LIBRARY_PATH%
 ```
 
-Update the library path for windows
+For Python 3.8 and newer, the wrapper automatically registers the IRIS `bin`
+directory with `os.add_dll_directory()` when `IRISINSTALLDIR` is set. Update
+`PATH` only when using older Python versions or external tools that need IRIS
+DLLs:
 
 ```bash
 set PATH=%IRISINSTALLDIR%\bin;%PATH%
@@ -70,7 +73,6 @@ For PowerShell, you can set the environment variables as follows:
 
 ```powershell
 $env:IRISINSTALLDIR="C:\path\to\iris"
-$env:PATH="$env:IRISINSTALLDIR\bin;$env:PATH"
 $env:IRISUSERNAME="SuperUser"
 $env:IRISPASSWORD="<password>"
 $env:IRISNAMESPACE="USER"
@@ -96,7 +98,7 @@ Pass any pytest selector or option after the script name:
 ./scripts/test-docker.sh tests/iris/test_dbapi.py -q
 ```
 
-The script starts `docker-compose-test-preview.yml`, waits for IRIS, unlocks the default test passwords, creates a Python virtual environment inside the IRIS container, installs this package, and runs `python3 -m pytest`. By default `IRIS_E2E_MODES=embedded,remote`, so remote DB-API e2e tests run and the embedded runtime is required from `python3`. Embedded DB-API SQL e2e tests run when `%SQL.Statement` can prepare SQL from the selected `python3` runtime.
+The script starts `docker-compose-test-preview.yml`, waits for IRIS, unlocks the default test passwords, sets `LD_LIBRARY_PATH=$IRISINSTALLDIR/bin:$LD_LIBRARY_PATH` as documented above, creates a Python virtual environment inside the IRIS container, installs this package, and runs `python3 -m pytest`. By default `IRIS_E2E_MODES=embedded,remote`, so remote DB-API e2e tests run and the embedded runtime plus embedded DB-API SQL are required from `python3`.
 
 To test another IRIS image tag:
 

@@ -7,6 +7,8 @@ from typing import Any, Literal, Optional
 RuntimeMode = Literal['auto', 'embedded', 'native']
 RuntimeState = Literal['embedded-kernel', 'embedded-local', 'native-remote', 'unavailable']
 _UNSET = object()
+_DLL_DIRECTORY_HANDLES = []
+_DLL_DIRECTORY_PATHS = set()
 
 
 def get_install_dir() -> Optional[str]:
@@ -138,7 +140,17 @@ runtime = RuntimeManager()
 def update_dynalib_path(dynalib_path):
     # Determine the environment variable based on the operating system
     env_var = 'PATH'
-    if not sys.platform.startswith('win'):
+    if sys.platform.startswith('win'):
+        add_dll_directory = getattr(os, 'add_dll_directory', None)
+        if add_dll_directory is not None:
+            dll_path_key = os.path.normcase(os.path.abspath(dynalib_path))
+            if dll_path_key not in _DLL_DIRECTORY_PATHS:
+                try:
+                    _DLL_DIRECTORY_HANDLES.append(add_dll_directory(dynalib_path))
+                    _DLL_DIRECTORY_PATHS.add(dll_path_key)
+                except OSError:
+                    pass
+    else:
         # set flags to allow dynamic loading of shared libraries
         sys.setdlopenflags(sys.getdlopenflags() | os.RTLD_GLOBAL)
         if sys.platform == 'darwin':
