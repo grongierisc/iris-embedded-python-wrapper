@@ -90,8 +90,17 @@ def test_connect_path_enables_embedded_runtime(monkeypatch, tmp_path):
         assert context.mode == "embedded"
         assert context.install_dir == str(install_dir)
         assert context.embedded_available is True
+        assert context.embedded_module is fake_module
+        assert context.embedded_cls is fake_module.cls
+        assert context.embedded_connect is fake_module.connect
         assert dynalib_paths == [str(install_dir / "bin")]
+        monkeypatch.setattr(_iris_ep, "_original_cls", None)
+        monkeypatch.setattr(_iris_ep, "_original_connect", None)
         assert iris.cls("User.Foo") == {"class": "User.Foo"}
+        assert iris.connect(label="runtime-owned") == {
+            "args": (),
+            "kwargs": {"label": "runtime-owned"},
+        }
     finally:
         iris.runtime.reset()
 

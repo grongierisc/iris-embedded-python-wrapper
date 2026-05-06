@@ -98,7 +98,7 @@ class _DBAPI:
                     "Embedded DB-API is only available in embedded runtime (embedded-kernel or embedded-local) via %SQL.Statement"
                 )
             return _EmbeddedConnection(
-                self._cls_getter,
+                self._get_embedded_cls,
                 use_statement=True,
                 isolation_level=isolation_level,
                 namespace=kwargs.pop("namespace", None),
@@ -107,12 +107,19 @@ class _DBAPI:
         raise InterfaceError(f"Unsupported dbapi mode: {mode}")
 
     def _connect_native(self, *args, **kwargs):
-        try:
-            native_dbapi = self._import_native_dbapi()
-        except ImportError as exc:
-            raise InterfaceError(
-                "Official native DB-API driver is unavailable (expected module: iris.dbapi)"
-            ) from exc
+        runtime_peek = getattr(self._runtime_manager, "peek", None)
+        runtime_state = runtime_peek() if callable(runtime_peek) else self._runtime_manager.get()
+        native_dbapi = getattr(runtime_state, "native_dbapi_module", None)
+        if native_dbapi is None:
+            try:
+                native_dbapi = self._import_native_dbapi()
+            except ImportError as exc:
+                raise InterfaceError(
+                    "Official native DB-API driver is unavailable (expected module: iris.dbapi)"
+                ) from exc
+            bind_backends = getattr(self._runtime_manager, "bind_backends", None)
+            if callable(bind_backends):
+                bind_backends(native_dbapi_module=native_dbapi)
 
         self._restore_public_facade(native_dbapi)
 
@@ -120,6 +127,15 @@ class _DBAPI:
             raise InterfaceError("Official native DB-API driver is invalid: missing connect()")
 
         return native_dbapi.connect(*args, **kwargs)
+
+    def _get_embedded_cls(self):
+        runtime_state = self._runtime_manager.get()
+        embedded_cls = getattr(runtime_state, "embedded_cls", None)
+        if callable(embedded_cls):
+            return embedded_cls
+        if self._cls_getter is not None:
+            return self._cls_getter()
+        return None
 
     @staticmethod
     def _import_native_dbapi():

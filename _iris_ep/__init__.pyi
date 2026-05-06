@@ -176,9 +176,14 @@ class RuntimeContext:
     state: str
     install_dir: Optional[str]
     embedded_available: bool
+    embedded_module: Any
+    embedded_cls: Any
+    embedded_connect: Any
     iris: Optional[IRIS]
     dbapi: Any
     native_connection: Optional[IRISConnection]
+    native_connect: Any
+    native_dbapi_module: Any
 
 class Runtime:
     @property
@@ -188,12 +193,24 @@ class Runtime:
     @property
     def embedded_available(self) -> bool: ...
     @property
+    def embedded_module(self) -> Any: ...
+    @property
+    def embedded_cls(self) -> Any: ...
+    @property
+    def embedded_connect(self) -> Any: ...
+    @property
     def iris(self) -> Optional[IRIS]: ...
     @property
     def dbapi(self) -> Any: ...
     @property
     def native_connection(self) -> Optional[IRISConnection]: ...
+    @property
+    def native_connect(self) -> Any: ...
+    @property
+    def native_dbapi_module(self) -> Any: ...
     def get(self) -> RuntimeContext: ...
+    def peek(self) -> RuntimeContext: ...
+    def bind_backends(self, **kwargs: Any) -> RuntimeContext: ...
     def configure(
         self,
         mode: str = ...,

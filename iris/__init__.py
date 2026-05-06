@@ -6,7 +6,7 @@ except ImportError:
     pass
 
 try:
-    from ._driver_loader import load_driver_symbols, rebind_wrapper_symbols
+    from iris_utils._driver_loader import load_driver_symbols, rebind_wrapper_symbols
 except ImportError:
     pass
 else:

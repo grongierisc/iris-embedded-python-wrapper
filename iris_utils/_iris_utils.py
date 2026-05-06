@@ -54,9 +54,14 @@ class RuntimeContext:
     install_dir: Optional[str] = None
     install_dir_explicit: bool = False
     embedded_available: bool = False
+    embedded_module: Any = None
+    embedded_cls: Any = None
+    embedded_connect: Any = None
     iris: Any = None
     dbapi: Any = None
     native_connection: Any = None
+    native_connect: Any = None
+    native_dbapi_module: Any = None
 
     def refresh(self) -> 'RuntimeContext':
         if not self.install_dir_explicit:
@@ -64,6 +69,13 @@ class RuntimeContext:
         if is_embedded_kernel():
             self.embedded_available = True
             self.state = 'embedded-kernel'
+        elif (
+            self.embedded_module is not None
+            or self.embedded_cls is not None
+            or self.embedded_connect is not None
+        ):
+            self.embedded_available = True
+            self.state = 'embedded-local'
         elif self.install_dir and can_import_embedded_python():
             self.embedded_available = True
             self.state = 'embedded-local'
@@ -93,6 +105,18 @@ class RuntimeManager:
         return self._context.embedded_available
 
     @property
+    def embedded_module(self) -> Any:
+        return self._context.embedded_module
+
+    @property
+    def embedded_cls(self) -> Any:
+        return self._context.embedded_cls
+
+    @property
+    def embedded_connect(self) -> Any:
+        return self._context.embedded_connect
+
+    @property
     def iris(self) -> Any:
         return self._context.iris
 
@@ -104,8 +128,45 @@ class RuntimeManager:
     def native_connection(self) -> Any:
         return self._context.native_connection
 
+    @property
+    def native_connect(self) -> Any:
+        return self._context.native_connect
+
+    @property
+    def native_dbapi_module(self) -> Any:
+        return self._context.native_dbapi_module
+
     def get(self) -> RuntimeContext:
         return self._context.refresh()
+
+    def peek(self) -> RuntimeContext:
+        return self._context
+
+    def bind_backends(
+        self,
+        *,
+        embedded_module: Any = _UNSET,
+        embedded_cls: Any = _UNSET,
+        embedded_connect: Any = _UNSET,
+        native_connect: Any = _UNSET,
+        native_dbapi_module: Any = _UNSET,
+    ) -> RuntimeContext:
+        embedded_updated = (
+            embedded_module is not _UNSET
+            or embedded_cls is not _UNSET
+            or embedded_connect is not _UNSET
+        )
+        if embedded_module is not _UNSET:
+            self._context.embedded_module = embedded_module
+        if embedded_cls is not _UNSET:
+            self._context.embedded_cls = embedded_cls
+        if embedded_connect is not _UNSET:
+            self._context.embedded_connect = embedded_connect
+        if native_connect is not _UNSET:
+            self._context.native_connect = native_connect
+        if native_dbapi_module is not _UNSET:
+            self._context.native_dbapi_module = native_dbapi_module
+        return self._context.refresh() if embedded_updated else self._context
 
     def configure(
         self,
@@ -119,6 +180,10 @@ class RuntimeManager:
         if install_dir is not _UNSET:
             self._context.install_dir = install_dir
             self._context.install_dir_explicit = True
+            if install_dir is None:
+                self._context.embedded_module = None
+                self._context.embedded_cls = None
+                self._context.embedded_connect = None
         # Treat configure() as setting the full runtime binding state.
         # Unspecified handles must be cleared to avoid stale native bindings
         # leaking into later embedded/auto configurations.
@@ -130,7 +195,12 @@ class RuntimeManager:
         return self._context.refresh()
 
     def reset(self) -> RuntimeContext:
+        native_connect = self._context.native_connect
+        native_dbapi_module = self._context.native_dbapi_module
         self._context = RuntimeContext().refresh()
+        self._context.native_connect = native_connect
+        self._context.native_dbapi_module = native_dbapi_module
+        self._context.refresh()
         return self._context
 
 

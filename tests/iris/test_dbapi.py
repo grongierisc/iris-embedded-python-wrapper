@@ -696,6 +696,7 @@ def test_dbapi_auto_mode_rejects_namespace_only_ambiguity(monkeypatch):
 
 
 def test_dbapi_native_uses_official_iris_dbapi(monkeypatch):
+    iris.runtime.bind_backends(native_dbapi_module=None)
     calls = []
 
     class FakeNativeDBAPI:
@@ -719,6 +720,7 @@ def test_dbapi_native_uses_official_iris_dbapi(monkeypatch):
 
 
 def test_dbapi_native_import_preserves_public_facade(monkeypatch):
+    iris.runtime.bind_backends(native_dbapi_module=None)
     calls = []
     facade = iris.dbapi
     parent_module = types.ModuleType("iris")
@@ -856,6 +858,7 @@ def test_dbapi_native_distribution_import_failure_restores_iris_modules(monkeypa
 
 
 def test_dbapi_native_errors_when_official_module_missing(monkeypatch):
+    iris.runtime.bind_backends(native_dbapi_module=None)
     def fake_import_module(name):
         raise ImportError(name)
 

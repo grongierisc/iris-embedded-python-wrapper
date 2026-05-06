@@ -50,6 +50,16 @@ def _install_unavailable_getattr():
     globals()["__getattr__"] = __getattr__
 
 
+def _bind_embedded_backend(module):
+    embedded_cls = getattr(module, 'cls', None)
+    embedded_connect = getattr(module, 'connect', None)
+    return _runtime_manager.bind_backends(
+        embedded_module=module,
+        embedded_cls=embedded_cls,
+        embedded_connect=embedded_connect,
+    )
+
+
 # check for install dir in environment
 # environment to check is IRISINSTALLDIR
 # if not found, raise exception and exit
@@ -93,6 +103,9 @@ _original_cls = globals().get('cls')
 _original_connect = globals().get('connect')
 _fallback_connect = None
 
+if "__iris_module" in globals():
+    _bind_embedded_backend(globals()["__iris_module"])
+
 def _install_embedded_module(module):
     global _original_cls, _original_connect
 
@@ -106,6 +119,7 @@ def _install_embedded_module(module):
     globals().update(module.__dict__)
     _original_cls = embedded_cls
     _original_connect = embedded_connect
+    _bind_embedded_backend(module)
 
     if callable(wrapper_cls):
         globals()['cls'] = wrapper_cls
@@ -123,6 +137,49 @@ def _load_embedded_backend(path):
     _install_embedded_module(module)
     return _runtime_manager.configure(mode='embedded', install_dir=install_dir)
 
+def _ensure_embedded_backend(current_runtime=None, required=False):
+    current_runtime = current_runtime or _runtime_manager.get()
+    if not hasattr(current_runtime, "embedded_cls"):
+        return current_runtime
+    if callable(getattr(current_runtime, "embedded_cls", None)) or callable(
+        getattr(current_runtime, "embedded_connect", None)
+    ):
+        return current_runtime
+
+    try:
+        if _bootstrap.is_embedded_kernel():
+            module = _bootstrap.import_embedded_kernel_module()
+        else:
+            install_dir = getattr(current_runtime, "install_dir", None)
+            if install_dir is None:
+                install_dir = _bootstrap.get_install_dir_from_env()
+            if install_dir is None:
+                raise RuntimeError(
+                    "Embedded Python is unavailable; configure IRISINSTALLDIR or call iris.connect(path=...)"
+                )
+            _bootstrap.configure_install_dir(install_dir)
+            module = _bootstrap.import_pythonint_module()
+    except Exception:
+        if required:
+            raise
+        return current_runtime
+
+    _install_embedded_module(module)
+    return _runtime_manager.get()
+
+
+def _get_embedded_cls(current_runtime=None, required=False):
+    current_runtime = _ensure_embedded_backend(current_runtime, required=required)
+    embedded_cls = getattr(current_runtime, "embedded_cls", None)
+    return embedded_cls if callable(embedded_cls) else None
+
+
+def _get_embedded_connect(current_runtime=None, required=False):
+    current_runtime = _ensure_embedded_backend(current_runtime, required=required)
+    embedded_connect = getattr(current_runtime, "embedded_connect", None)
+    return embedded_connect if callable(embedded_connect) else None
+
+
 def cls(class_name):
     current_runtime = _runtime_manager.get()
     if current_runtime.mode == 'native':
@@ -130,11 +187,14 @@ def cls(class_name):
             raise RuntimeError("iris.runtime is configured for native mode, but no native IRIS handle is bound")
         return NativeClassProxy(class_name, current_runtime.iris)
     if current_runtime.mode == 'embedded':
-        if _original_cls is None:
+        embedded_cls = _get_embedded_cls(current_runtime, required=True)
+        if embedded_cls is None:
             raise RuntimeError("iris.runtime is configured for embedded mode, but embedded Python is unavailable")
-        return _original_cls(class_name)
-    if current_runtime.embedded_available and _original_cls is not None:
-        return _original_cls(class_name)
+        return embedded_cls(class_name)
+    if current_runtime.embedded_available:
+        embedded_cls = _get_embedded_cls(current_runtime)
+        if embedded_cls is not None:
+            return embedded_cls(class_name)
     if current_runtime.iris is not None:
         return NativeClassProxy(class_name, current_runtime.iris)
     logging.warning("No Embedded Python or Native API connection available.")
@@ -148,10 +208,27 @@ def connect(*args, path=None, **kwargs):
             raise TypeError("iris.connect(path=...) cannot be combined with native connection arguments")
         return _load_embedded_backend(path)
 
-    if callable(_fallback_connect):
-        return _fallback_connect(*args, **kwargs)
-    if callable(_original_connect):
-        return _original_connect(*args, **kwargs)
+    current_runtime = _runtime_manager.get()
+    if current_runtime.mode == 'embedded':
+        embedded_connect = _get_embedded_connect(current_runtime, required=True)
+        if callable(embedded_connect):
+            return embedded_connect(*args, **kwargs)
+        raise RuntimeError("iris.connect requires an embedded runtime backend")
+
+    if current_runtime.mode == 'native':
+        native_connect = getattr(current_runtime, "native_connect", None)
+        if callable(native_connect):
+            return native_connect(*args, **kwargs)
+        raise RuntimeError("iris.connect requires an installed native driver")
+
+    native_connect = getattr(current_runtime, "native_connect", None)
+    if callable(native_connect):
+        return native_connect(*args, **kwargs)
+
+    embedded_connect = _get_embedded_connect(current_runtime)
+    if callable(embedded_connect):
+        return embedded_connect(*args, **kwargs)
+
     raise RuntimeError("iris.connect requires path=... for embedded mode or an installed native driver")
 
 
@@ -207,6 +284,18 @@ class _RuntimeNamespace:
         return _runtime_manager.get().embedded_available
 
     @property
+    def embedded_module(self):
+        return _runtime_manager.get().embedded_module
+
+    @property
+    def embedded_cls(self):
+        return _runtime_manager.get().embedded_cls
+
+    @property
+    def embedded_connect(self):
+        return _runtime_manager.get().embedded_connect
+
+    @property
     def iris(self):
         return _runtime_manager.get().iris
 
@@ -218,8 +307,22 @@ class _RuntimeNamespace:
     def native_connection(self):
         return _runtime_manager.get().native_connection
 
+    @property
+    def native_connect(self):
+        return _runtime_manager.get().native_connect
+
+    @property
+    def native_dbapi_module(self):
+        return _runtime_manager.get().native_dbapi_module
+
     def get(self):
         return _runtime_manager.get()
+
+    def peek(self):
+        return _runtime_manager.peek()
+
+    def bind_backends(self, **kwargs):
+        return _runtime_manager.bind_backends(**kwargs)
 
     def configure(self, **kwargs):
         config = dict(kwargs)
@@ -263,7 +366,7 @@ runtime = _runtime
 # delegate to native DB-API when remote parameters are provided.
 dbapi = make_dbapi(
     _runtime,
-    lambda: globals().get('cls'),
+    lambda: _get_embedded_cls(_runtime.get()) or globals().get('cls'),
 )
 
 _existing_all = globals().get("__all__")

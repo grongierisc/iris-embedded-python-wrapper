@@ -1,7 +1,7 @@
 import sys
 import types
 
-from iris import _driver_loader
+from iris_utils import _driver_loader
 
 
 def test_driver_loader_prefers_official_sdk(monkeypatch):
@@ -55,9 +55,16 @@ def test_driver_loader_uses_community_only_when_official_unavailable(monkeypatch
 def test_driver_loader_rebinds_wrapper_symbols(monkeypatch):
     wrapper_connect = object()
     driver_connect = object()
+    backend_bindings = {}
+
+    class Runtime:
+        @staticmethod
+        def bind_backends(**kwargs):
+            backend_bindings.update(kwargs)
+
     iris_ep_module = types.ModuleType("iris_ep")
     iris_ep_module.connect = wrapper_connect
-    iris_ep_module.runtime = "runtime"
+    iris_ep_module.runtime = Runtime()
     iris_ep_module.dbapi = "dbapi"
     iris_ep_module.cls = "cls"
 
@@ -68,8 +75,9 @@ def test_driver_loader_rebinds_wrapper_symbols(monkeypatch):
     _driver_loader.rebind_wrapper_symbols(module_globals)
 
     assert iris_ep_module._fallback_connect is driver_connect
+    assert backend_bindings == {"native_connect": driver_connect}
     assert module_globals["_driver_connect"] is driver_connect
     assert module_globals["connect"] is wrapper_connect
-    assert module_globals["runtime"] == "runtime"
+    assert module_globals["runtime"] is iris_ep_module.runtime
     assert module_globals["dbapi"] == "dbapi"
     assert module_globals["cls"] == "cls"
