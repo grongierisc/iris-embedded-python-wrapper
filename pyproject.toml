@@ -3,7 +3,7 @@ requires = ["setuptools", "wheel"]
 
 [project]
 name = "iris-embedded-python-wrapper"
-version = "0.5.17"
+version = "0.5.18"
 description = "Wrapper for embedded python on InterSystems IRIS"
 readme = "README.md"
 authors = [

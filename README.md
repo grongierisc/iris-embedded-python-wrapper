@@ -114,6 +114,9 @@ before Python starts. `iris.connect(path=...)` can configure Python import paths
 at runtime, but it cannot repair Unix dynamic loader resolution after the
 process has already started. If `pythonint` is found but its dependent shared
 libraries are not, the runtime error names the loader-path variable that must
+include the IRIS `bin` directory. When embedded-local is configured through
+`IRISINSTALLDIR`, `ISC_PACKAGE_INSTALLDIR`, or `path=...`, the wrapper also
+emits a `RuntimeWarning` on Unix if that loader-path variable does not already
 include the IRIS `bin` directory.
 
 #### Linux and macOS

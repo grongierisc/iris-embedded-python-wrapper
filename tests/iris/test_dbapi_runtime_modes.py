@@ -17,6 +17,9 @@ def _install_fake_embedded_runtime(monkeypatch, tmp_path, fake_statement):
     (install_dir / "bin").mkdir(parents=True)
     (install_dir / "lib" / "python").mkdir(parents=True)
     dynalib_paths = []
+    if not sys.platform.startswith("win"):
+        env_var = _iris_ep._bootstrap.get_loader_path_env_var()
+        monkeypatch.setenv(env_var, str(install_dir / "bin"))
 
     fake_module = types.SimpleNamespace(
         __file__=str(install_dir / "bin" / "pythonint.so"),
@@ -341,6 +344,9 @@ def test_dbapi_connect_path_surfaces_loader_path_import_error(monkeypatch, tmp_p
     install_dir = tmp_path / "iris"
     (install_dir / "bin").mkdir(parents=True)
     (install_dir / "lib" / "python").mkdir(parents=True)
+    if not sys.platform.startswith("win"):
+        env_var = _iris_ep._bootstrap.get_loader_path_env_var()
+        monkeypatch.setenv(env_var, str(install_dir / "bin"))
 
     def fake_import_module(name):
         raise ImportError("libirisdb.so: cannot open shared object file")

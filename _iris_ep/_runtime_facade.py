@@ -235,7 +235,10 @@ class RuntimeFacade:
             logging.warning("IRISINSTALLDIR or ISC_PACKAGE_INSTALLDIR environment variable is not set")
             logging.warning("Embedded Python not configured; call iris.connect(path=...) to configure it")
         else:
-            _bootstrap.configure_install_dir(installdir)
+            _bootstrap.configure_install_dir(
+                installdir,
+                warn_loader_path=not _bootstrap.is_embedded_kernel(),
+            )
 
         if _bootstrap.is_embedded_kernel():
             module = _bootstrap.import_embedded_kernel_module()
@@ -348,7 +351,7 @@ class RuntimeFacade:
                 setattr(module, "__getattr__", self.module_globals["__getattr__"])
 
     def load_embedded_backend(self, path):
-        install_dir = _bootstrap.configure_install_dir(path)
+        install_dir = _bootstrap.configure_install_dir(path, warn_loader_path=True)
         module = _bootstrap.import_pythonint_module_from_install_dir(install_dir)
         self.install_embedded_module(module)
         return self.runtime_manager.configure(mode='embedded', install_dir=install_dir)

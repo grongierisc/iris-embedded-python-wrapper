@@ -101,6 +101,38 @@ def test_import_iris_without_install_dir_does_not_probe_pythonint(tmp_path):
     assert "NO_PYTHONINT_PROBE_OK" in result.stdout
 
 
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Unix loader-path warning")
+@pytest.mark.parametrize("install_env", ["IRISINSTALLDIR", "ISC_PACKAGE_INSTALLDIR"])
+def test_import_iris_with_install_env_warns_when_loader_path_wrong(tmp_path, install_env):
+    install_dir = tmp_path / "iris"
+    other_dir = tmp_path / "other"
+    (install_dir / "bin").mkdir(parents=True)
+    (install_dir / "lib" / "python").mkdir(parents=True)
+    other_dir.mkdir()
+    env_var = "DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH"
+
+    result = _fresh_python(
+        """
+        import warnings
+
+        warnings.simplefilter("always", RuntimeWarning)
+        import iris
+
+        assert iris.runtime.get().install_dir
+        print("INSTALL_ENV_LOADER_WARNING_OK")
+        """,
+        tmp_path,
+        extra_env={
+            install_env: str(install_dir),
+            env_var: str(other_dir),
+        },
+    )
+
+    _assert_fresh_python_ok(result)
+    assert "INSTALL_ENV_LOADER_WARNING_OK" in result.stdout
+    assert f"{env_var} does not include {install_dir / 'bin'}" in result.stderr
+
+
 def test_native_dbapi_import_contract_preserves_wrapper_parent(tmp_path):
     try:
         importlib.metadata.distribution("intersystems-irispython")

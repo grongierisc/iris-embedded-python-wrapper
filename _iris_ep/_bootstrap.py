@@ -1,9 +1,11 @@
 import importlib
 import os
 import sys
+import warnings
 
 from iris_utils import update_dynalib_path
 
+_LOADER_PATH_WARNINGS_EMITTED = set()
 _SHARED_LIBRARY_ERROR_MARKERS = (
     "cannot open shared object file",
     "dlopen(",
@@ -35,7 +37,51 @@ def _push_sys_paths_front(paths):
     return original
 
 
-def configure_install_dir(path):
+def _env_path_contains(env_var, path):
+    target = os.path.normcase(os.path.realpath(os.fspath(path)))
+    current_paths = os.environ.get(env_var, "")
+    for entry in current_paths.split(os.pathsep):
+        if not entry:
+            continue
+        candidate = os.path.normcase(os.path.realpath(entry))
+        if candidate == target:
+            return True
+    return False
+
+
+def format_loader_path_warning(install_dir):
+    bin_dir = os.path.join(install_dir, 'bin')
+    env_var = get_loader_path_env_var()
+    return (
+        f"IRIS embedded-local loading may fail because {env_var} does not "
+        f"include {bin_dir}. Set {env_var} to include the IRIS bin directory "
+        f"before Python starts; changing it after startup may be too late for "
+        f"the dynamic loader."
+    )
+
+
+def warn_if_loader_path_unconfigured(install_dir):
+    if sys.platform.startswith('win'):
+        return
+
+    bin_dir = os.path.join(install_dir, 'bin')
+    env_var = get_loader_path_env_var()
+    if _env_path_contains(env_var, bin_dir):
+        return
+
+    warning_key = (env_var, os.path.normcase(os.path.realpath(bin_dir)))
+    if warning_key in _LOADER_PATH_WARNINGS_EMITTED:
+        return
+    _LOADER_PATH_WARNINGS_EMITTED.add(warning_key)
+
+    warnings.warn(
+        format_loader_path_warning(install_dir),
+        RuntimeWarning,
+        stacklevel=3,
+    )
+
+
+def configure_install_dir(path, *, warn_loader_path=False):
     if not path:
         raise ValueError("path must be a non-empty IRIS installation directory")
 
@@ -58,6 +104,9 @@ def configure_install_dir(path):
 
     _append_sys_path(bin_dir)
     _append_sys_path(python_dir)
+
+    if warn_loader_path:
+        warn_if_loader_path_unconfigured(install_dir)
 
     update_dynalib_path(bin_dir)
     return install_dir

@@ -36,6 +36,13 @@ def _restore_module_attrs(snapshot):
         else:
             setattr(module, name, value)
 
+
+def _set_loader_path(monkeypatch, install_dir):
+    if not sys.platform.startswith("win"):
+        env_var = _iris_ep._bootstrap.get_loader_path_env_var()
+        monkeypatch.setenv(env_var, str(install_dir / "bin"))
+
+
 def test_import_iris():
     import iris
 
@@ -101,6 +108,7 @@ def test_connect_path_enables_embedded_runtime(monkeypatch, tmp_path):
     (install_dir / "bin").mkdir(parents=True)
     (install_dir / "lib" / "python").mkdir(parents=True)
     dynalib_paths = []
+    _set_loader_path(monkeypatch, install_dir)
 
     class FakeVersion:
         @staticmethod
@@ -179,6 +187,7 @@ def test_connect_path_reports_loader_path_import_error(monkeypatch, tmp_path):
     (install_dir / "bin").mkdir(parents=True)
     (install_dir / "lib" / "python").mkdir(parents=True)
     dynalib_paths = []
+    _set_loader_path(monkeypatch, install_dir)
 
     def fake_import_module(name):
         raise ImportError("dlopen(pythonint.so): Library not loaded: libirisdb.dylib")
@@ -196,6 +205,66 @@ def test_connect_path_reports_loader_path_import_error(monkeypatch, tmp_path):
     iris.runtime.reset()
 
 
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Unix loader-path warning")
+def test_connect_path_warns_when_loader_path_missing(monkeypatch, tmp_path):
+    iris.runtime.reset()
+    install_dir = tmp_path / "iris"
+    (install_dir / "bin").mkdir(parents=True)
+    (install_dir / "lib" / "python").mkdir(parents=True)
+    env_var = _iris_ep._bootstrap.get_loader_path_env_var()
+    monkeypatch.delenv(env_var, raising=False)
+
+    fake_module = types.SimpleNamespace(
+        __file__=str(install_dir / "bin" / "pythonint.so"),
+        cls=lambda name: {"class": name},
+        connect=lambda *args, **kwargs: {"ok": True},
+    )
+
+    def fake_import_module(name):
+        if name == "pythonint":
+            return fake_module
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(_iris_ep._bootstrap.importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(_iris_ep._bootstrap, "update_dynalib_path", lambda path: None)
+
+    with pytest.warns(RuntimeWarning, match=f"{env_var} does not include"):
+        iris.connect(path=install_dir)
+
+    iris.runtime.reset()
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Unix loader-path warning")
+def test_connect_path_warns_when_loader_path_points_elsewhere(monkeypatch, tmp_path):
+    iris.runtime.reset()
+    install_dir = tmp_path / "iris"
+    other_dir = tmp_path / "other"
+    (install_dir / "bin").mkdir(parents=True)
+    (install_dir / "lib" / "python").mkdir(parents=True)
+    other_dir.mkdir()
+    env_var = _iris_ep._bootstrap.get_loader_path_env_var()
+    monkeypatch.setenv(env_var, str(other_dir))
+
+    fake_module = types.SimpleNamespace(
+        __file__=str(install_dir / "bin" / "pythonint.so"),
+        cls=lambda name: {"class": name},
+        connect=lambda *args, **kwargs: {"ok": True},
+    )
+
+    def fake_import_module(name):
+        if name == "pythonint":
+            return fake_module
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(_iris_ep._bootstrap.importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(_iris_ep._bootstrap, "update_dynalib_path", lambda path: None)
+
+    with pytest.warns(RuntimeWarning, match=f"{env_var} does not include"):
+        iris.connect(path=install_dir)
+
+    iris.runtime.reset()
+
+
 def test_connect_path_rejects_pythonint_from_other_install(monkeypatch, tmp_path):
     iris.runtime.reset()
     install_dir = tmp_path / "iris"
@@ -203,6 +272,7 @@ def test_connect_path_rejects_pythonint_from_other_install(monkeypatch, tmp_path
     (install_dir / "bin").mkdir(parents=True)
     (install_dir / "lib" / "python").mkdir(parents=True)
     (other_dir / "bin").mkdir(parents=True)
+    _set_loader_path(monkeypatch, install_dir)
 
     fake_module = types.SimpleNamespace(
         __file__=str(other_dir / "bin" / "pythonint.so"),
@@ -233,6 +303,7 @@ def test_connect_path_ignores_stale_pythonint_module(monkeypatch, tmp_path):
     (install_dir / "bin").mkdir(parents=True)
     (install_dir / "lib" / "python").mkdir(parents=True)
     (other_dir / "bin").mkdir(parents=True)
+    _set_loader_path(monkeypatch, install_dir)
 
     stale_module = types.SimpleNamespace(
         __file__=str(other_dir / "bin" / "pythonint.so"),
@@ -272,6 +343,7 @@ def test_connect_path_only_prioritizes_install_dir_during_pythonint_import(monke
     (install_dir / "bin").mkdir(parents=True)
     (install_dir / "lib" / "python").mkdir(parents=True)
     seen_import_path = []
+    _set_loader_path(monkeypatch, install_dir)
 
     fake_module = types.SimpleNamespace(
         __file__=str(install_dir / "bin" / "pythonint.so"),
@@ -308,6 +380,7 @@ def test_connect_path_warns_when_backend_has_no_connect(monkeypatch, tmp_path):
     install_dir = tmp_path / "iris"
     (install_dir / "bin").mkdir(parents=True)
     (install_dir / "lib" / "python").mkdir(parents=True)
+    _set_loader_path(monkeypatch, install_dir)
 
     fake_module = types.SimpleNamespace(
         __file__=str(install_dir / "bin" / "pythonint.so"),
