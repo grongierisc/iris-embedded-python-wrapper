@@ -17,6 +17,19 @@ def configure_install_dir(path):
     bin_dir = os.path.join(install_dir, 'bin')
     python_dir = os.path.join(install_dir, 'lib', 'python')
 
+    if not os.path.isdir(install_dir):
+        raise ValueError(
+            f"IRIS installation directory does not exist: {install_dir}"
+        )
+    if not os.path.isdir(bin_dir):
+        raise ValueError(
+            f"IRIS installation directory is invalid: missing bin directory at {bin_dir}"
+        )
+    if not os.path.isdir(python_dir):
+        raise ValueError(
+            f"IRIS installation directory is invalid: missing embedded Python directory at {python_dir}"
+        )
+
     if bin_dir not in sys.path:
         sys.path.append(bin_dir)
     if python_dir not in sys.path:

@@ -2,7 +2,39 @@ import iris
 import _iris_ep
 import os
 import pytest
+import sys
 import types
+
+
+_MISSING = object()
+
+
+def _snapshot_module_attrs(*names):
+    modules = [
+        module for module in (
+            iris,
+            _iris_ep,
+            sys.modules.get("iris_ep"),
+            sys.modules.get("iris_embedded_python"),
+        )
+        if module is not None
+    ]
+    return {
+        (module, name): getattr(module, name, _MISSING)
+        for module in modules
+        for name in names
+    }
+
+
+def _restore_module_attrs(snapshot):
+    for (module, name), value in snapshot.items():
+        if value is _MISSING:
+            try:
+                delattr(module, name)
+            except AttributeError:
+                pass
+        else:
+            setattr(module, name, value)
 
 def test_import_iris():
     import iris
@@ -63,14 +95,25 @@ def test_runtime_reconfigure_clears_native_handles():
 
 def test_connect_path_enables_embedded_runtime(monkeypatch, tmp_path):
     iris.runtime.reset()
+    module_attrs = _snapshot_module_attrs("system", "__getattr__")
 
     install_dir = tmp_path / "iris"
     (install_dir / "bin").mkdir(parents=True)
     (install_dir / "lib" / "python").mkdir(parents=True)
     dynalib_paths = []
 
+    class FakeVersion:
+        @staticmethod
+        def GetVersion():
+            return "IRIS fake version"
+
+    def fake_cls(class_name):
+        if class_name == "%SYSTEM.Version":
+            return FakeVersion
+        return {"class": class_name}
+
     fake_module = types.SimpleNamespace(
-        cls=lambda class_name: {"class": class_name},
+        cls=fake_cls,
         connect=lambda *args, **kwargs: {"args": args, "kwargs": kwargs},
     )
 
@@ -93,14 +136,62 @@ def test_connect_path_enables_embedded_runtime(monkeypatch, tmp_path):
         assert context.embedded_connect is fake_module.connect
         assert dynalib_paths == [str(install_dir / "bin")]
         assert iris.cls("User.Foo") == {"class": "User.Foo"}
+        assert iris.system.Version.GetVersion() == "IRIS fake version"
+        with pytest.raises(AttributeError):
+            iris.not_present
         assert iris.connect(label="runtime-owned") == {
             "args": (),
             "kwargs": {"label": "runtime-owned"},
         }
     finally:
         iris.runtime.reset()
+        _restore_module_attrs(module_attrs)
 
 
 def test_connect_path_rejects_native_arguments(tmp_path):
     with pytest.raises(TypeError, match="path"):
         iris.connect("localhost", path=tmp_path)
+
+
+def test_connect_path_rejects_missing_install_dir(monkeypatch, tmp_path):
+    missing_dir = tmp_path / "missing-iris"
+    import_calls = []
+    dynalib_paths = []
+
+    monkeypatch.setattr(
+        _iris_ep._bootstrap.importlib,
+        "import_module",
+        lambda name: import_calls.append(name),
+    )
+    monkeypatch.setattr(_iris_ep._bootstrap, "update_dynalib_path", dynalib_paths.append)
+
+    with pytest.raises(ValueError, match="does not exist"):
+        iris.connect(path=missing_dir)
+
+    assert import_calls == []
+    assert dynalib_paths == []
+
+
+def test_connect_path_rejects_invalid_install_layout(monkeypatch, tmp_path):
+    install_dir = tmp_path / "iris"
+    install_dir.mkdir()
+    import_calls = []
+    dynalib_paths = []
+
+    monkeypatch.setattr(
+        _iris_ep._bootstrap.importlib,
+        "import_module",
+        lambda name: import_calls.append(name),
+    )
+    monkeypatch.setattr(_iris_ep._bootstrap, "update_dynalib_path", dynalib_paths.append)
+
+    with pytest.raises(ValueError, match="missing bin directory"):
+        iris.connect(path=install_dir)
+
+    (install_dir / "bin").mkdir()
+
+    with pytest.raises(ValueError, match="missing embedded Python directory"):
+        iris.connect(path=install_dir)
+
+    assert import_calls == []
+    assert dynalib_paths == []

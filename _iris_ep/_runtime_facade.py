@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from typing import Any
 
 from iris_utils import NativeClassProxy, runtime as _runtime_manager
@@ -65,6 +66,17 @@ def install_default_getattr(module_globals: dict[str, Any], module_name: str) ->
         raise AttributeError(f"module '{module_name}' has no attribute '{name}'")
 
     module_globals["__getattr__"] = __getattr__
+
+
+class EmbeddedSystemProxy:
+    def __init__(self, facade: "RuntimeFacade"):
+        self._facade = facade
+
+    def __getattr__(self, name):
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
+        mapped_name = name.replace("_", "%", 1) if name.startswith("_") else name
+        return self._facade.cls(f"%SYSTEM.{mapped_name}")
 
 
 class RuntimeNamespace:
@@ -290,8 +302,49 @@ class RuntimeFacade:
         )
 
     def install_embedded_module(self, module: Any):
+        module_getattr = getattr(module, "__getattr__", None)
         copy_public_exports(module, self.module_globals, skip=_WRAPPER_EXPORTS)
-        return self.bind_embedded_backend(module)
+        self.install_embedded_convenience_symbols(module)
+        if callable(module_getattr):
+            self.module_globals["__getattr__"] = module_getattr
+        else:
+            install_default_getattr(self.module_globals, self.module_name)
+
+        context = self.bind_embedded_backend(module)
+        self.sync_public_modules()
+        return context
+
+    def install_embedded_convenience_symbols(self, module: Any):
+        if hasattr(module, "system"):
+            self.module_globals["system"] = getattr(module, "system")
+        else:
+            self.module_globals["system"] = EmbeddedSystemProxy(self)
+
+        if hasattr(module, "sql"):
+            self.module_globals["sql"] = getattr(module, "sql")
+
+        exported_names = self.module_globals.get("__all__")
+        if isinstance(exported_names, list):
+            for name in ("system",):
+                if name in self.module_globals and name not in exported_names:
+                    exported_names.append(name)
+
+    def sync_public_modules(self):
+        public_names = set()
+        exported_names = self.module_globals.get("__all__")
+        if isinstance(exported_names, (list, tuple, set)):
+            public_names.update(str(name) for name in exported_names)
+        public_names.update(("runtime", "dbapi", "cls", "connect", "system"))
+
+        for module_name in ("iris", "iris_ep", "iris_embedded_python"):
+            module = sys.modules.get(module_name)
+            if module is None:
+                continue
+            for name in public_names:
+                if name in self.module_globals:
+                    setattr(module, name, self.module_globals[name])
+            if "__getattr__" in self.module_globals:
+                setattr(module, "__getattr__", self.module_globals["__getattr__"])
 
     def load_embedded_backend(self, path):
         install_dir = _bootstrap.configure_install_dir(path)

@@ -277,3 +277,60 @@ def test_dbapi_connect_path_rejects_native_arguments(tmp_path):
 def test_dbapi_connect_path_rejects_unknown_options(tmp_path):
     with pytest.raises(iris.dbapi.InterfaceError, match="only accepts embedded options"):
         iris.dbapi.connect(path=tmp_path, timeout=10)
+
+
+def test_dbapi_connect_path_rejects_missing_install_dir(monkeypatch, tmp_path):
+    missing_dir = tmp_path / "missing-iris"
+    import_calls = []
+    dynalib_paths = []
+
+    monkeypatch.setattr(
+        _iris_ep._bootstrap.importlib,
+        "import_module",
+        lambda name: import_calls.append(name),
+    )
+    monkeypatch.setattr(_iris_ep._bootstrap, "update_dynalib_path", dynalib_paths.append)
+
+    with pytest.raises(
+        iris.dbapi.InterfaceError,
+        match="could not configure embedded runtime",
+    ) as excinfo:
+        iris.dbapi.connect(path=missing_dir)
+
+    assert "does not exist" in str(excinfo.value.__cause__)
+    assert import_calls == []
+    assert dynalib_paths == []
+
+
+def test_dbapi_connect_path_rejects_invalid_install_layout(monkeypatch, tmp_path):
+    install_dir = tmp_path / "iris"
+    install_dir.mkdir()
+    import_calls = []
+    dynalib_paths = []
+
+    monkeypatch.setattr(
+        _iris_ep._bootstrap.importlib,
+        "import_module",
+        lambda name: import_calls.append(name),
+    )
+    monkeypatch.setattr(_iris_ep._bootstrap, "update_dynalib_path", dynalib_paths.append)
+
+    with pytest.raises(
+        iris.dbapi.InterfaceError,
+        match="could not configure embedded runtime",
+    ) as excinfo:
+        iris.dbapi.connect(path=install_dir)
+
+    assert "missing bin directory" in str(excinfo.value.__cause__)
+
+    (install_dir / "bin").mkdir()
+
+    with pytest.raises(
+        iris.dbapi.InterfaceError,
+        match="could not configure embedded runtime",
+    ) as excinfo:
+        iris.dbapi.connect(path=install_dir)
+
+    assert "missing embedded Python directory" in str(excinfo.value.__cause__)
+    assert import_calls == []
+    assert dynalib_paths == []

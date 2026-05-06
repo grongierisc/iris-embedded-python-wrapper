@@ -2,11 +2,11 @@
 
 This is a module that wraps embedded python in the IRIS Dataplateform. It provides a simple interface to run python code in IRIS.
 
-More details can be found in the [IRIS documentation](https://docs.intersystems.com/iris20243/csp/docbook/DocBook.UI.Page.cls?KEY=AFL_epython)
+More details can be found in the [IRIS documentation](https://docs.intersystems.com/irislatest/csp/docbook/DocBook.UI.Page.cls?KEY=AFL_epython)
 
 # Pre-requisites
 
-To make use of this module, you need to have the IRIS Dataplatform installed on your machine (more details can be found [here](https://docs.intersystems.com/iris20243/csp/docbook/DocBook.UI.Page.cls?KEY=PAGE_deployment_install)).
+To make use of this module, you need to have the IRIS Dataplatform installed on your machine (more details can be found [here](https://docs.intersystems.com/irislatest/csp/docbook/DocBook.UI.Page.cls?KEY=PAGE_deployment_install)).
 
 Then you must configure the [service callin](#configuration-of-the-service-callin) to allow the python code to be executed and [set the environment variables](#environment-variables).
 
@@ -14,7 +14,7 @@ Then you must configure the [service callin](#configuration-of-the-service-calli
 
 In the Management Portal, go to System Administration > Security > Services, select %Service_CallIn, and check the Service Enabled box.
 
-More details can be found in the [IRIS documentation](https://docs.intersystems.com/iris20243/csp/docbook/DocBook.UI.Page.cls?KEY=GEPYTHON_prereqs)
+More details can be found in the [IRIS documentation](https://docs.intersystems.com/irislatest/csp/docbook/DocBook.UI.Page.cls?KEY=GEPYTHON_prereqs)
 
 ## Environment Variables
 
@@ -178,6 +178,9 @@ obj = iris.cls("Ens.StringRequest")._New()
 This is useful when `IRISINSTALLDIR` is not set. On Linux and macOS, the
 native library path still needs to be configured before Python starts as shown
 in the environment setup section.
+The path must point to an IRIS installation directory with `bin` and
+`lib/python` subdirectories; invalid paths fail before the wrapper mutates
+Python import paths or loader paths.
 
 Reset to automatic detection:
 
@@ -249,6 +252,7 @@ embedded runtime configuration behavior, but return different things:
 `iris.dbapi.connect(path=...)` accepts embedded DB-API options such as
 `namespace=...` and `isolation_level=...`. It rejects native mode and native
 connection arguments such as `hostname`, `port`, `username`, and `password`.
+The path is validated with the same rules as `iris.connect(path=...)`.
 
 ### Examples
 

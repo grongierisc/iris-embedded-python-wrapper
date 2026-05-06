@@ -16,7 +16,7 @@ available from one package while making the active runtime explicit through
 `iris.runtime`.
 
 More details about embedded Python in IRIS are available in the
-[IRIS documentation](https://docs.intersystems.com/iris20243/csp/docbook/DocBook.UI.Page.cls?KEY=AFL_epython).
+[IRIS documentation](https://docs.intersystems.com/irislatest/csp/docbook/DocBook.UI.Page.cls?KEY=AFL_epython).
 
 ## What this project brings
 
@@ -78,7 +78,7 @@ This package gives you:
 
 To use embedded-local or embedded-kernel mode, you need an InterSystems IRIS
 installation (more details can be found
-[here](https://docs.intersystems.com/iris20243/csp/docbook/DocBook.UI.Page.cls?KEY=PAGE_deployment_install)).
+[here](https://docs.intersystems.com/irislatest/csp/docbook/DocBook.UI.Page.cls?KEY=PAGE_deployment_install)).
 
 For remote/native mode, you need a running IRIS instance reachable by the
 official native driver.
@@ -91,7 +91,7 @@ For embedded access from outside an IRIS kernel, configure
 
 In the Management Portal, go to System Administration > Security > Services, select %Service_CallIn, and check the Service Enabled box.
 
-More details can be found in the [IRIS documentation](https://docs.intersystems.com/iris20243/csp/docbook/DocBook.UI.Page.cls?KEY=GEPYTHON_prereqs)
+More details can be found in the [IRIS documentation](https://docs.intersystems.com/irislatest/csp/docbook/DocBook.UI.Page.cls?KEY=GEPYTHON_prereqs)
 
 ### Environment Variables
 
@@ -148,7 +148,7 @@ connections:
 
 ```bash
 set IRISUSERNAME=SuperUser
-set IRISPASSWORD=SYS
+set IRISPASSWORD=<password>
 set IRISNAMESPACE=USER
 ```
 
@@ -167,72 +167,6 @@ $env:IRISNAMESPACE="USER"
 
 ```bash
 pip install iris-embedded-python-wrapper
-```
-
-### Running tests
-
-#### Local `.venv`
-
-For pure unit tests, use the project virtual environment and keep CPF merge
-tests on temporary files:
-
-```bash
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install -e . pytest
-env -u ISC_CPF_MERGE_FILE python -m pytest tests -q
-```
-
-Embedded-local e2e tests from `python3` also need an IRIS installation and the
-platform loader path configured before Python starts:
-
-```bash
-export IRISINSTALLDIR=/opt/iris
-export LD_LIBRARY_PATH=$IRISINSTALLDIR/bin:$LD_LIBRARY_PATH
-python -m pytest tests/iris/test_dbapi_e2e.py -q
-```
-
-On macOS use `DYLD_LIBRARY_PATH` where your shell and Python launcher allow it.
-On Windows, the wrapper registers the IRIS `bin` directory with
-`os.add_dll_directory()` when `IRISINSTALLDIR` is set.
-
-#### Docker
-
-Run the test suite in Docker with the vanilla official InterSystems IRIS
-community image:
-
-```bash
-./scripts/test-docker.sh
-```
-
-Pass any pytest selector or option after the script name:
-
-```bash
-./scripts/test-docker.sh tests/iris/test_dbapi_embedded.py -q
-```
-
-`scripts/test-docker.sh` starts `docker-compose-test-preview.yml`, waits for
-IRIS, unlocks the default test passwords, and then delegates pytest execution to
-`scripts/run-pytest-in-iris.sh`. The in-container runner is the single source of
-truth for GitHub Actions and local Docker runs.
-
-The container test flow is source-based:
-
-- the repository is mounted at `/irisdev/app` read-only
-- `PYTHONPATH=/irisdev/app` exposes the working tree
-- the test virtual environment is created under `/tmp`
-- pytest bytecode/cache writes are disabled
-- `ISC_CPF_MERGE_FILE` is unset before pytest so tests cannot rewrite the repo
-  merge file
-
-By default `IRIS_E2E_MODES=embedded,remote`, so remote DB-API e2e tests run and
-the embedded runtime plus embedded DB-API SQL are required from `python3`.
-
-To test another IRIS image tag:
-
-```bash
-IRIS_IMAGE_TAG=latest-preview ./scripts/test-docker.sh
 ```
 
 ## Usage
@@ -326,6 +260,50 @@ starting Python, or provide the install directory at runtime with
 
 `runtime.configure(...)` also accepts an `IRISConnection` and auto-converts it to an IRIS handle via `createIRIS(...)` for `iris.cls(...)` routing.
 
+#### Remote `iris.cls(...)`: before and after
+
+The official native API is explicit and low-level. Without the wrapper, remote
+code normally keeps an IRIS handle and calls helper methods for every class
+method, object method, property read, and property write:
+
+```python
+import iris
+
+conn = iris.connect("localhost", 1972, "USER", "SuperUser", "<password>")
+db = iris.createIRIS(conn)
+
+req = db.classMethodValue("Ens.StringRequest", "%New")
+db.set(req, "StringValue", "hello")
+value = db.get(req, "StringValue")
+db.invoke(req, "SomeInstanceMethod")
+
+result = db.classMethodValue("MyApp.Service", "SomeClassMethod", value)
+# Some SDK versions also expose invokeClassMethod(...).
+same_result = db.invokeClassMethod("MyApp.Service", "SomeClassMethod", value)
+```
+
+With this wrapper, bind the native connection once and use the same
+`iris.cls(...)` shape you would use in embedded Python. The proxy maps a leading
+underscore to `%`, so `_New()` calls `%New`.
+
+```python
+import iris
+
+conn = iris.connect("localhost", 1972, "USER", "SuperUser", "<password>")
+iris.runtime.configure(native_connection=conn)
+
+req = iris.cls("Ens.StringRequest")._New()
+req.StringValue = "hello"
+value = req.StringValue
+req.SomeInstanceMethod()
+
+result = iris.cls("MyApp.Service").SomeClassMethod(value)
+```
+
+This keeps remote/native code close to embedded code and removes most direct
+use of `classMethodValue(...)`, `invokeClassMethod(...)`, `invoke(...)`,
+`get(...)`, and `set(...)` from application code.
+
 #### Examples
 
 Force native object API routing:
@@ -372,6 +350,9 @@ This is useful when `IRISINSTALLDIR` is not set. On Linux and macOS, the
 native library path still needs to be configured before Python starts as shown
 in the environment setup section; `path=...` configures the wrapper, but it
 cannot change Unix dynamic loader resolution for already-started processes.
+The path must point to an IRIS installation directory with `bin` and
+`lib/python` subdirectories; invalid paths fail before the wrapper mutates
+Python import paths or loader paths.
 
 Reset to automatic detection:
 
@@ -443,6 +424,7 @@ embedded runtime configuration behavior, but return different things:
 `iris.dbapi.connect(path=...)` accepts embedded DB-API options such as
 `namespace=...` and `isolation_level=...`. It rejects native mode and native
 connection arguments such as `hostname`, `port`, `username`, and `password`.
+The path is validated with the same rules as `iris.connect(path=...)`.
 
 #### Examples
 
@@ -512,8 +494,8 @@ conn = iris.dbapi.connect(
 		hostname="localhost",
 		port=1972,
 		namespace="USER",
-		username="_SYSTEM",
-		password="SYS",
+		username="SuperUser",
+		password="<password>",
 )
 iris.runtime.configure(dbapi=conn)
 
@@ -580,6 +562,72 @@ IRIS Merge completed successfully
 INFO:iris_utils._find_libpython:PythonRuntimeLibrary path set to /usr/local/Cellar/python@3.11/3.11.10/Frameworks/Python.framework/Versions/3.11/Python
 INFO:iris_utils._find_libpython:PythonPath set to /Other/.venv/lib/python3.11/site-packages
 INFO:iris_utils._find_libpython:PythonRuntimeLibraryVersion set to 3.11
+```
+
+## Running tests
+
+### Local `.venv`
+
+For pure unit tests, use the project virtual environment and keep CPF merge
+tests on temporary files:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -e . pytest
+env -u ISC_CPF_MERGE_FILE python -m pytest tests -q
+```
+
+Embedded-local e2e tests from `python3` also need an IRIS installation and the
+platform loader path configured before Python starts:
+
+```bash
+export IRISINSTALLDIR=/opt/iris
+export LD_LIBRARY_PATH=$IRISINSTALLDIR/bin:$LD_LIBRARY_PATH
+python -m pytest tests/iris/test_dbapi_e2e.py -q
+```
+
+On macOS use `DYLD_LIBRARY_PATH` where your shell and Python launcher allow it.
+On Windows, the wrapper registers the IRIS `bin` directory with
+`os.add_dll_directory()` when `IRISINSTALLDIR` is set.
+
+### Docker
+
+Run the test suite in Docker with the vanilla official InterSystems IRIS
+community image:
+
+```bash
+./scripts/test-docker.sh
+```
+
+Pass any pytest selector or option after the script name:
+
+```bash
+./scripts/test-docker.sh tests/iris/test_dbapi_embedded.py -q
+```
+
+`scripts/test-docker.sh` starts `docker-compose-test-preview.yml`, waits for
+IRIS, unlocks the default test passwords, and then delegates pytest execution to
+`scripts/run-pytest-in-iris.sh`. The in-container runner is the single source of
+truth for GitHub Actions and local Docker runs.
+
+The container test flow is source-based:
+
+- the repository is mounted at `/irisdev/app` read-only
+- `PYTHONPATH=/irisdev/app` exposes the working tree
+- the test virtual environment is created under `/tmp`
+- pytest bytecode/cache writes are disabled
+- `ISC_CPF_MERGE_FILE` is unset before pytest so tests cannot rewrite the repo
+  merge file
+
+By default `IRIS_E2E_MODES=embedded,remote`, so remote DB-API e2e tests run and
+the embedded runtime plus embedded DB-API SQL are required from `python3`.
+
+To test another IRIS image tag:
+
+```bash
+IRIS_IMAGE_TAG=latest-preview ./scripts/test-docker.sh
 ```
 
 ## Troubleshooting
