@@ -130,6 +130,48 @@ print(version)
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_dbapi_connect_path_e2e_returns_embedded_connection_without_install_env():
+    _require_embedded_runtime()
+    _require_embedded_dbapi_sql()
+
+    install_dir = (
+        os.getenv("IRISINSTALLDIR")
+        or os.getenv("ISC_PACKAGE_INSTALLDIR")
+        or "/usr/irissys"
+    )
+    env = os.environ.copy()
+    env.pop("IRISINSTALLDIR", None)
+    env.pop("ISC_PACKAGE_INSTALLDIR", None)
+
+    script = f"""
+import iris
+
+conn = iris.dbapi.connect(path={install_dir!r})
+cur = conn.cursor()
+try:
+    cur.execute("SELECT 1 AS result")
+    row = cur.fetchone()
+    assert row is not None
+    assert row[0] == 1
+    assert iris.runtime.get().mode == "embedded"
+    assert iris.runtime.get().install_dir == {install_dir!r}
+    print(row[0])
+finally:
+    cur.close()
+    conn.close()
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 @pytest.fixture(params=_dbapi_modes())
 def dbapi_mode(request):
     mode = request.param

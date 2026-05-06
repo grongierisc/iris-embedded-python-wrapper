@@ -349,7 +349,13 @@ class _DBAPI:
     InternalError: Any
     ProgrammingError: Any
     NotSupportedError: Any
-    def connect(self, *args: Any, mode: str = ..., **kwargs: Any) -> Any: ...
+    def connect(
+        self,
+        *args: Any,
+        path: Optional[Union[os.PathLike[str], str]] = ...,
+        mode: str = ...,
+        **kwargs: Any,
+    ) -> Any: ...
 
 dbapi: _DBAPI
 

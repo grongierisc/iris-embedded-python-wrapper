@@ -161,6 +161,9 @@ class RuntimeNamespace:
     def bind_backends(self, **kwargs):
         return _runtime_manager.bind_backends(**kwargs)
 
+    def load_embedded_backend(self, path):
+        return self._facade.load_embedded_backend(path)
+
     def configure(self, **kwargs):
         config = dict(kwargs)
 

@@ -21,6 +21,15 @@ from ._dbapi_exceptions import (
     threadsafety,
 )
 
+_NATIVE_REMOTE_ARGUMENTS = (
+    "hostname",
+    "port",
+    "username",
+    "password",
+    "connectionstr",
+    "accessToken",
+)
+
 
 class _DBAPI:
     def __init__(self, runtime_manager: Any, cls_getter: Any = None):
@@ -48,26 +57,29 @@ class _DBAPI:
     def connect(
         self,
         *args,
+        path: Any = None,
         mode: str = "auto",
         isolation_level: Optional[str] = _DEFAULT_ISOLATION_LEVEL,
         **kwargs,
     ):
         has_namespace_arg = "namespace" in kwargs
         has_native_remote_args = bool(args) or any(
-            key in kwargs
-            for key in (
-                "hostname",
-                "port",
-                "username",
-                "password",
-                "connectionstr",
-                "accessToken",
-            )
+            key in kwargs for key in _NATIVE_REMOTE_ARGUMENTS
         )
         has_remote_args = has_native_remote_args or has_namespace_arg
 
         if mode not in ("auto", "embedded", "native"):
             raise InterfaceError(f"Unsupported dbapi mode: {mode}")
+
+        if path is not None:
+            return self._connect_embedded_path(
+                path=path,
+                args=args,
+                kwargs=kwargs,
+                mode=mode,
+                has_native_remote_args=has_native_remote_args,
+                isolation_level=isolation_level,
+            )
 
         if mode == "auto" and has_namespace_arg and not has_native_remote_args:
             raise InterfaceError(
@@ -90,21 +102,81 @@ class _DBAPI:
             )
 
         if mode in ("embedded", "auto"):
-            if not runtime_state.embedded_available or runtime_state.state not in (
-                "embedded-kernel",
-                "embedded-local",
-            ):
-                raise InterfaceError(
-                    "Embedded DB-API is only available in embedded runtime (embedded-kernel or embedded-local) via %SQL.Statement"
-                )
-            return _EmbeddedConnection(
-                self._get_embedded_cls,
-                use_statement=True,
+            return self._connect_embedded(
+                runtime_state,
                 isolation_level=isolation_level,
                 namespace=kwargs.pop("namespace", None),
             )
 
         raise InterfaceError(f"Unsupported dbapi mode: {mode}")
+
+    def _connect_embedded_path(
+        self,
+        *,
+        path: Any,
+        args: Any,
+        kwargs: dict[str, Any],
+        mode: str,
+        has_native_remote_args: bool,
+        isolation_level: Optional[str],
+    ):
+        if mode == "native":
+            raise InterfaceError(
+                "iris.dbapi.connect(path=...) requires mode='auto' or mode='embedded'"
+            )
+        if has_native_remote_args:
+            raise InterfaceError(
+                "iris.dbapi.connect(path=...) cannot be combined with native connection arguments"
+            )
+
+        namespace = kwargs.pop("namespace", None)
+        if kwargs:
+            supported = "namespace"
+            received = ", ".join(sorted(kwargs))
+            raise InterfaceError(
+                f"iris.dbapi.connect(path=...) only accepts embedded options ({supported}); "
+                f"got: {received}"
+            )
+
+        load_embedded_backend = getattr(self._runtime_manager, "load_embedded_backend", None)
+        if not callable(load_embedded_backend):
+            raise InterfaceError(
+                "iris.dbapi.connect(path=...) requires the iris runtime facade"
+            )
+
+        try:
+            runtime_state = load_embedded_backend(path)
+        except Exception as exc:
+            raise InterfaceError(
+                "iris.dbapi.connect(path=...) could not configure embedded runtime"
+            ) from exc
+
+        return self._connect_embedded(
+            runtime_state,
+            isolation_level=isolation_level,
+            namespace=namespace,
+        )
+
+    def _connect_embedded(
+        self,
+        runtime_state: Any,
+        *,
+        isolation_level: Optional[str],
+        namespace: Optional[str],
+    ):
+        if not runtime_state.embedded_available or runtime_state.state not in (
+            "embedded-kernel",
+            "embedded-local",
+        ):
+            raise InterfaceError(
+                "Embedded DB-API is only available in embedded runtime (embedded-kernel or embedded-local) via %SQL.Statement"
+            )
+        return _EmbeddedConnection(
+            self._get_embedded_cls,
+            use_statement=True,
+            isolation_level=isolation_level,
+            namespace=namespace,
+        )
 
     def _connect_native(self, *args, **kwargs):
         runtime_peek = getattr(self._runtime_manager, "peek", None)

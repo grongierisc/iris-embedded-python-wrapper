@@ -12,6 +12,26 @@ from tests.iris._dbapi_fakes import (
 )
 
 
+def _install_fake_embedded_runtime(monkeypatch, tmp_path, fake_statement):
+    install_dir = tmp_path / "iris"
+    (install_dir / "bin").mkdir(parents=True)
+    (install_dir / "lib" / "python").mkdir(parents=True)
+    dynalib_paths = []
+
+    fake_module = types.SimpleNamespace(
+        cls=lambda name: FakeStatementFactory(fake_statement),
+    )
+
+    def fake_import_module(name):
+        if name == "pythonint":
+            return fake_module
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(_iris_ep._bootstrap.importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(_iris_ep._bootstrap, "update_dynalib_path", dynalib_paths.append)
+    return install_dir, dynalib_paths, fake_module
+
+
 def test_dbapi_auto_mode_defaults_to_embedded(monkeypatch):
     fake_statement = FakeStatement([(5, "e")])
 
@@ -194,3 +214,66 @@ def test_dbapi_auto_mode_rejects_namespace_only_ambiguity(monkeypatch):
     with pytest.raises(iris.dbapi.InterfaceError, match="cannot infer whether namespace"):
         iris.dbapi.connect(namespace="USER")
 
+
+def test_dbapi_connect_path_enables_embedded_runtime(monkeypatch, tmp_path):
+    iris.runtime.reset()
+    fake_statement = FakeStatement([(12, "path")])
+    install_dir, dynalib_paths, fake_module = _install_fake_embedded_runtime(
+        monkeypatch,
+        tmp_path,
+        fake_statement,
+    )
+
+    try:
+        conn = iris.dbapi.connect(path=install_dir)
+        cur = conn.cursor()
+        cur.execute("select 1")
+
+        assert iris.runtime.mode == "embedded"
+        assert iris.runtime.get().install_dir == str(install_dir)
+        assert iris.runtime.embedded_cls is fake_module.cls
+        assert dynalib_paths == [str(install_dir / "bin")]
+        assert cur.fetchone() == (12, "path")
+    finally:
+        iris.runtime.reset()
+
+
+def test_dbapi_connect_path_allows_embedded_options(monkeypatch, tmp_path):
+    iris.runtime.reset()
+    fake_statement = FakeStatement([(1,)])
+    install_dir, _, _ = _install_fake_embedded_runtime(
+        monkeypatch,
+        tmp_path,
+        fake_statement,
+    )
+
+    try:
+        conn = iris.dbapi.connect(
+            path=install_dir,
+            mode="embedded",
+            namespace="USER",
+            isolation_level=None,
+        )
+
+        assert conn._namespace == "USER"
+        assert conn.isolation_level is None
+    finally:
+        iris.runtime.reset()
+
+
+def test_dbapi_connect_path_rejects_native_mode(tmp_path):
+    with pytest.raises(iris.dbapi.InterfaceError, match="mode='auto' or mode='embedded'"):
+        iris.dbapi.connect(path=tmp_path, mode="native")
+
+
+def test_dbapi_connect_path_rejects_native_arguments(tmp_path):
+    with pytest.raises(iris.dbapi.InterfaceError, match="native connection arguments"):
+        iris.dbapi.connect(path=tmp_path, hostname="localhost")
+
+    with pytest.raises(iris.dbapi.InterfaceError, match="native connection arguments"):
+        iris.dbapi.connect("localhost", path=tmp_path)
+
+
+def test_dbapi_connect_path_rejects_unknown_options(tmp_path):
+    with pytest.raises(iris.dbapi.InterfaceError, match="only accepts embedded options"):
+        iris.dbapi.connect(path=tmp_path, timeout=10)

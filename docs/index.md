@@ -235,8 +235,20 @@ Native resolution uses the official module path `iris.dbapi` (not `intersystems_
 `mode` is optional for DB-API.
 
 - With explicit remote arguments (`hostname`, `port`, `namespace`, `username`, `password`, etc.), DB-API infers native.
+- With `path=...`, DB-API configures embedded-local runtime and returns an
+  embedded DB-API connection. `mode` must be `auto` or `embedded`.
 - With `iris.runtime.configure(dbapi=conn)`, DB-API auto mode reuses the bound native connection.
 - Without remote arguments or a bound runtime DB-API connection, DB-API auto mode uses embedded unless `iris.runtime` is explicitly in native mode.
+
+`iris.connect(path=...)` and `iris.dbapi.connect(path=...)` share the same
+embedded runtime configuration behavior, but return different things:
+
+- `iris.connect(path=...)` returns the `RuntimeContext`
+- `iris.dbapi.connect(path=...)` returns a DB-API connection
+
+`iris.dbapi.connect(path=...)` accepts embedded DB-API options such as
+`namespace=...` and `isolation_level=...`. It rejects native mode and native
+connection arguments such as `hostname`, `port`, `username`, and `password`.
 
 ### Examples
 
@@ -251,6 +263,17 @@ cur.execute("SELECT Name FROM Sample.Person")
 rows = cur.fetchall()
 cur.close()
 conn.close()
+```
+
+Embedded-local mode with an explicit IRIS installation directory:
+
+```python
+import iris
+
+conn = iris.dbapi.connect(path="/opt/iris", namespace="USER")
+cur = conn.cursor()
+cur.execute("SELECT 1")
+print(cur.fetchone())
 ```
 
 Native mode:
