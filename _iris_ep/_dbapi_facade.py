@@ -148,7 +148,7 @@ class _DBAPI:
             runtime_state = load_embedded_backend(path)
         except Exception as exc:
             raise InterfaceError(
-                "iris.dbapi.connect(path=...) could not configure embedded runtime"
+                f"iris.dbapi.connect(path=...) could not configure embedded runtime: {exc}"
             ) from exc
 
         return self._connect_embedded(

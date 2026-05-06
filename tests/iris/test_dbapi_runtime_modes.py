@@ -19,6 +19,7 @@ def _install_fake_embedded_runtime(monkeypatch, tmp_path, fake_statement):
     dynalib_paths = []
 
     fake_module = types.SimpleNamespace(
+        __file__=str(install_dir / "bin" / "pythonint.so"),
         cls=lambda name: FakeStatementFactory(fake_statement),
     )
 
@@ -334,3 +335,24 @@ def test_dbapi_connect_path_rejects_invalid_install_layout(monkeypatch, tmp_path
     assert "missing embedded Python directory" in str(excinfo.value.__cause__)
     assert import_calls == []
     assert dynalib_paths == []
+
+
+def test_dbapi_connect_path_surfaces_loader_path_import_error(monkeypatch, tmp_path):
+    install_dir = tmp_path / "iris"
+    (install_dir / "bin").mkdir(parents=True)
+    (install_dir / "lib" / "python").mkdir(parents=True)
+
+    def fake_import_module(name):
+        raise ImportError("libirisdb.so: cannot open shared object file")
+
+    monkeypatch.setattr(_iris_ep._bootstrap.importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(_iris_ep._bootstrap, "update_dynalib_path", lambda path: None)
+
+    with pytest.raises(
+        iris.dbapi.InterfaceError,
+        match="IRIS shared libraries could not be loaded",
+    ) as excinfo:
+        iris.dbapi.connect(path=install_dir)
+
+    assert _iris_ep._bootstrap.get_loader_path_env_var() in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, RuntimeError)

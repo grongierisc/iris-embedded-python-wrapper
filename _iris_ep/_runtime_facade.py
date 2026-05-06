@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import warnings
 from typing import Any
 
 from iris_utils import NativeClassProxy, runtime as _runtime_manager
@@ -348,7 +349,7 @@ class RuntimeFacade:
 
     def load_embedded_backend(self, path):
         install_dir = _bootstrap.configure_install_dir(path)
-        module = _bootstrap.import_pythonint_module()
+        module = _bootstrap.import_pythonint_module_from_install_dir(install_dir)
         self.install_embedded_module(module)
         return self.runtime_manager.configure(mode='embedded', install_dir=install_dir)
 
@@ -427,7 +428,17 @@ class RuntimeFacade:
         if path is not None:
             if args or kwargs:
                 raise TypeError("iris.connect(path=...) cannot be combined with native connection arguments")
-            return self.load_embedded_backend(path)
+            context = self.load_embedded_backend(path)
+            if not callable(getattr(context, "embedded_connect", None)):
+                warnings.warn(
+                    "iris.connect(path=...) configured embedded runtime and returned "
+                    "a RuntimeContext, not a DB-API connection. The embedded backend "
+                    "does not expose connect(); use iris.dbapi.connect(path=...) for "
+                    "a DB-API connection or iris.cls(...) for embedded class access.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            return context
 
         current_runtime = self.runtime_manager.get()
         if current_runtime.mode == 'embedded':

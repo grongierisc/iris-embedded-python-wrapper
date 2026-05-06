@@ -64,6 +64,9 @@ This package gives you:
   the IRIS install directory is known but `IRISINSTALLDIR` is not set.
 - `iris.dbapi.connect(path=...)` uses the same embedded runtime configuration
   path and returns an embedded DB-API connection.
+- Explicit `path=...` loading validates that `pythonint` came from that IRIS
+  installation and reports Unix loader-path failures with the required
+  `LD_LIBRARY_PATH` or `DYLD_LIBRARY_PATH` setup.
 - `iris.runtime` is the single source of truth for runtime state and backend
   bindings.
 - `iris.dbapi.connect(mode="auto")` chooses embedded or native DB-API based on
@@ -109,7 +112,9 @@ Use the following environment variables as needed:
 execution from regular `python3` on Unix also needs the loader path configured
 before Python starts. `iris.connect(path=...)` can configure Python import paths
 at runtime, but it cannot repair Unix dynamic loader resolution after the
-process has already started.
+process has already started. If `pythonint` is found but its dependent shared
+libraries are not, the runtime error names the loader-path variable that must
+include the IRIS `bin` directory.
 
 #### Linux and macOS
 
@@ -352,7 +357,15 @@ in the environment setup section; `path=...` configures the wrapper, but it
 cannot change Unix dynamic loader resolution for already-started processes.
 The path must point to an IRIS installation directory with `bin` and
 `lib/python` subdirectories; invalid paths fail before the wrapper mutates
-Python import paths or loader paths.
+Python import paths or loader paths. For explicit `path=...`, the wrapper also
+removes stale `pythonint` modules for the import attempt and verifies that the
+loaded `pythonint.__file__` is under that installation's `bin` or `lib/python`
+directory.
+
+`iris.connect(path=...)` returns the runtime context. If the loaded embedded
+backend does not expose a callable `connect`, the wrapper emits a
+`RuntimeWarning`; use `iris.dbapi.connect(path=...)` when you want a DB-API
+connection in one call.
 
 Reset to automatic detection:
 
@@ -636,7 +649,20 @@ You may encounter the following error, here is how to fix them.
 
 ### No module named 'pythonint'
 
-This can occur when the environment variable `IRISINSTALLDIR` is not set correctly. Make sure that the path is correct.
+This usually means the wrapper cannot find the IRIS embedded Python extension.
+Check that `IRISINSTALLDIR` or `path=...` points to the IRIS installation
+directory, not a parent directory, and that it contains both `bin` and
+`lib/python`.
+
+If the error mentions IRIS shared libraries, configure the platform loader path
+before Python starts:
+
+```bash
+export IRISINSTALLDIR=/opt/iris
+export LD_LIBRARY_PATH=$IRISINSTALLDIR/bin:$LD_LIBRARY_PATH
+# macOS
+export DYLD_LIBRARY_PATH=$IRISINSTALLDIR/bin:$DYLD_LIBRARY_PATH
+```
 
 ### IRIS_ACCESSDENIED (-15)
 
@@ -649,9 +675,14 @@ This can occur when the user is not the same as the iris owner. Make sure that t
 
 ### irisbuiltins.SQLError: <UNIMPLEMENTED>ddtab+82^%qaqpsq
 
-This error can occur when the required libraries are not found. You can fix this by copying the necessary libraries to the Python framework directory:
+This error can occur when IRIS dependent libraries are not visible to the
+dynamic loader. Prefer setting `LD_LIBRARY_PATH` on Linux or `DYLD_LIBRARY_PATH`
+on macOS before Python starts, instead of copying IRIS libraries into the
+Python installation:
 
 ```bash
-cp /opt/intersystems/iris/bin/libicudata.69.dylib /usr/local/Cellar/python@3.11/3.11.13/Frameworks/Python.framework/Versions/3.11/Resources/Python.app/Contents/MacOS/
-cp /opt/intersystems/iris/bin/libicuuc.69.dylib /usr/local/Cellar/python@3.11/3.11.13/Frameworks/Python.framework/Versions/3.11/Resources/Python.app/Contents/MacOS/
+export IRISINSTALLDIR=/opt/iris
+export LD_LIBRARY_PATH=$IRISINSTALLDIR/bin:$LD_LIBRARY_PATH
+# macOS
+export DYLD_LIBRARY_PATH=$IRISINSTALLDIR/bin:$DYLD_LIBRARY_PATH
 ```

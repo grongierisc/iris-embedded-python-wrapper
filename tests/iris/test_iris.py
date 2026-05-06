@@ -113,6 +113,7 @@ def test_connect_path_enables_embedded_runtime(monkeypatch, tmp_path):
         return {"class": class_name}
 
     fake_module = types.SimpleNamespace(
+        __file__=str(install_dir / "bin" / "pythonint.so"),
         cls=fake_cls,
         connect=lambda *args, **kwargs: {"args": args, "kwargs": kwargs},
     )
@@ -170,6 +171,166 @@ def test_connect_path_rejects_missing_install_dir(monkeypatch, tmp_path):
 
     assert import_calls == []
     assert dynalib_paths == []
+
+
+def test_connect_path_reports_loader_path_import_error(monkeypatch, tmp_path):
+    iris.runtime.reset()
+    install_dir = tmp_path / "iris"
+    (install_dir / "bin").mkdir(parents=True)
+    (install_dir / "lib" / "python").mkdir(parents=True)
+    dynalib_paths = []
+
+    def fake_import_module(name):
+        raise ImportError("dlopen(pythonint.so): Library not loaded: libirisdb.dylib")
+
+    monkeypatch.setattr(_iris_ep._bootstrap.importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(_iris_ep._bootstrap, "update_dynalib_path", dynalib_paths.append)
+
+    with pytest.raises(RuntimeError, match="IRIS shared libraries could not be loaded") as excinfo:
+        iris.connect(path=install_dir)
+
+    message = str(excinfo.value)
+    assert _iris_ep._bootstrap.get_loader_path_env_var() in message
+    assert str(install_dir / "bin") in message
+    assert dynalib_paths == [str(install_dir / "bin")]
+    iris.runtime.reset()
+
+
+def test_connect_path_rejects_pythonint_from_other_install(monkeypatch, tmp_path):
+    iris.runtime.reset()
+    install_dir = tmp_path / "iris"
+    other_dir = tmp_path / "other-iris"
+    (install_dir / "bin").mkdir(parents=True)
+    (install_dir / "lib" / "python").mkdir(parents=True)
+    (other_dir / "bin").mkdir(parents=True)
+
+    fake_module = types.SimpleNamespace(
+        __file__=str(other_dir / "bin" / "pythonint.so"),
+        cls=lambda name: object(),
+        connect=lambda *args, **kwargs: object(),
+    )
+
+    def fake_import_module(name):
+        if name == "pythonint":
+            return fake_module
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(_iris_ep._bootstrap.importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(_iris_ep._bootstrap, "update_dynalib_path", lambda path: None)
+
+    with pytest.raises(RuntimeError, match="does not belong"):
+        iris.connect(path=install_dir)
+
+    iris.runtime.reset()
+
+
+def test_connect_path_ignores_stale_pythonint_module(monkeypatch, tmp_path):
+    iris.runtime.reset()
+    module_attrs = _snapshot_module_attrs("system", "__getattr__")
+
+    install_dir = tmp_path / "iris"
+    other_dir = tmp_path / "other-iris"
+    (install_dir / "bin").mkdir(parents=True)
+    (install_dir / "lib" / "python").mkdir(parents=True)
+    (other_dir / "bin").mkdir(parents=True)
+
+    stale_module = types.SimpleNamespace(
+        __file__=str(other_dir / "bin" / "pythonint.so"),
+    )
+    good_module = types.SimpleNamespace(
+        __file__=str(install_dir / "bin" / "pythonint.so"),
+        cls=lambda name: {"class": name},
+        connect=lambda *args, **kwargs: {"ok": True},
+    )
+    candidate_name = _iris_ep._bootstrap.get_pythonint_module_candidates()[0]
+    monkeypatch.setitem(sys.modules, candidate_name, stale_module)
+
+    def fake_import_module(name):
+        assert sys.modules.get(name) is not stale_module
+        if name == candidate_name:
+            sys.modules[name] = good_module
+            return good_module
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(_iris_ep._bootstrap.importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(_iris_ep._bootstrap, "update_dynalib_path", lambda path: None)
+
+    try:
+        context = iris.connect(path=install_dir)
+
+        assert context.embedded_module is good_module
+        assert iris.cls("User.Foo") == {"class": "User.Foo"}
+    finally:
+        iris.runtime.reset()
+        _restore_module_attrs(module_attrs)
+
+
+def test_connect_path_only_prioritizes_install_dir_during_pythonint_import(monkeypatch, tmp_path):
+    iris.runtime.reset()
+    original_sys_path = list(sys.path)
+    install_dir = tmp_path / "iris"
+    (install_dir / "bin").mkdir(parents=True)
+    (install_dir / "lib" / "python").mkdir(parents=True)
+    seen_import_path = []
+
+    fake_module = types.SimpleNamespace(
+        __file__=str(install_dir / "bin" / "pythonint.so"),
+        cls=lambda name: {"class": name},
+        connect=lambda *args, **kwargs: {"ok": True},
+    )
+
+    def fake_import_module(name):
+        if name == "pythonint":
+            seen_import_path.extend(sys.path[:2])
+            return fake_module
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(_iris_ep._bootstrap.importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(_iris_ep._bootstrap, "update_dynalib_path", lambda path: None)
+
+    try:
+        iris.connect(path=install_dir)
+
+        assert seen_import_path == [
+            str(install_dir / "bin"),
+            str(install_dir / "lib" / "python"),
+        ]
+        assert sys.path[:len(original_sys_path)] == original_sys_path
+    finally:
+        iris.runtime.reset()
+        sys.path[:] = original_sys_path
+
+
+def test_connect_path_warns_when_backend_has_no_connect(monkeypatch, tmp_path):
+    iris.runtime.reset()
+    module_attrs = _snapshot_module_attrs("system", "__getattr__")
+
+    install_dir = tmp_path / "iris"
+    (install_dir / "bin").mkdir(parents=True)
+    (install_dir / "lib" / "python").mkdir(parents=True)
+
+    fake_module = types.SimpleNamespace(
+        __file__=str(install_dir / "bin" / "pythonint.so"),
+        cls=lambda name: {"class": name},
+    )
+
+    def fake_import_module(name):
+        if name == "pythonint":
+            return fake_module
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(_iris_ep._bootstrap.importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(_iris_ep._bootstrap, "update_dynalib_path", lambda path: None)
+
+    try:
+        with pytest.warns(RuntimeWarning, match="RuntimeContext"):
+            context = iris.connect(path=install_dir)
+
+        assert context.embedded_connect is None
+        assert iris.cls("User.Foo") == {"class": "User.Foo"}
+    finally:
+        iris.runtime.reset()
+        _restore_module_attrs(module_attrs)
 
 
 def test_connect_path_rejects_invalid_install_layout(monkeypatch, tmp_path):

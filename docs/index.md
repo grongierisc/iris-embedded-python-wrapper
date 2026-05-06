@@ -21,10 +21,16 @@ More details can be found in the [IRIS documentation](https://docs.intersystems.
 Set the following environment variables :
 
 - IRISINSTALLDIR: The path to the IRIS installation directory
-- LD_LIBRARY_PATH: The path to the IRIS library
+- LD_LIBRARY_PATH: The Linux loader path for IRIS shared libraries
+- DYLD_LIBRARY_PATH: The macOS loader path for IRIS shared libraries
 - IRISUSERNAME: The username to connect to IRIS
 - IRISPASSWORD: The password to connect to IRIS
 - IRISNAMESPACE: The namespace to connect to IRIS
+
+Embedded-local execution from regular `python3` on Unix needs the loader path
+configured before Python starts. `iris.connect(path=...)` can configure Python
+import paths at runtime, but it cannot repair Unix dynamic loader resolution
+after startup.
 
 ### For Linux and MacOS
 
@@ -180,7 +186,15 @@ native library path still needs to be configured before Python starts as shown
 in the environment setup section.
 The path must point to an IRIS installation directory with `bin` and
 `lib/python` subdirectories; invalid paths fail before the wrapper mutates
-Python import paths or loader paths.
+Python import paths or loader paths. For explicit `path=...`, the wrapper also
+removes stale `pythonint` modules for the import attempt and verifies that the
+loaded `pythonint.__file__` is under that installation's `bin` or `lib/python`
+directory.
+
+`iris.connect(path=...)` returns the runtime context. If the loaded embedded
+backend does not expose a callable `connect`, the wrapper emits a
+`RuntimeWarning`; use `iris.dbapi.connect(path=...)` when you want a DB-API
+connection in one call.
 
 Reset to automatic detection:
 
@@ -396,7 +410,19 @@ You may encounter the following error, here is how to fix them.
 
 ## No module named 'pythonint'
 
-This can occur when the environment variable `IRISINSTALLDIR` is not set correctly. Make sure that the path is correct.
+This usually means the wrapper cannot find the IRIS embedded Python extension.
+Check that `IRISINSTALLDIR` or `path=...` points to the IRIS installation
+directory and that it contains both `bin` and `lib/python`.
+
+If the error mentions IRIS shared libraries, configure the platform loader path
+before Python starts:
+
+```bash
+export IRISINSTALLDIR=/opt/iris
+export LD_LIBRARY_PATH=$IRISINSTALLDIR/bin:$LD_LIBRARY_PATH
+# macOS
+export DYLD_LIBRARY_PATH=$IRISINSTALLDIR/bin:$DYLD_LIBRARY_PATH
+```
 
 ## IRIS_ACCESSDENIED (-15)
 

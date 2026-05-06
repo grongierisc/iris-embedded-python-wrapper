@@ -4,9 +4,35 @@ import sys
 
 from iris_utils import update_dynalib_path
 
+_SHARED_LIBRARY_ERROR_MARKERS = (
+    "cannot open shared object file",
+    "dlopen(",
+    "image not found",
+    "library not loaded",
+    "dll load failed",
+    "undefined symbol",
+    "symbol not found",
+    "wrong elf class",
+    "mach-o",
+)
+
 
 def get_install_dir_from_env():
     return os.environ.get('IRISINSTALLDIR') or os.environ.get('ISC_PACKAGE_INSTALLDIR')
+
+
+def _append_sys_path(path):
+    if path not in sys.path:
+        sys.path.append(path)
+
+
+def _push_sys_paths_front(paths):
+    original = list(sys.path)
+    for path in reversed(paths):
+        while path in sys.path:
+            sys.path.remove(path)
+        sys.path.insert(0, path)
+    return original
 
 
 def configure_install_dir(path):
@@ -30,10 +56,8 @@ def configure_install_dir(path):
             f"IRIS installation directory is invalid: missing embedded Python directory at {python_dir}"
         )
 
-    if bin_dir not in sys.path:
-        sys.path.append(bin_dir)
-    if python_dir not in sys.path:
-        sys.path.append(python_dir)
+    _append_sys_path(bin_dir)
+    _append_sys_path(python_dir)
 
     update_dynalib_path(bin_dir)
     return install_dir
@@ -78,3 +102,133 @@ def import_pythonint_module(module_name=None):
         if module_name == 'pythonint':
             raise
         return importlib.import_module(name='pythonint')
+
+
+def get_pythonint_module_candidates(module_name=None):
+    module_name = module_name or get_pythonint_module_name()
+    if module_name is None:
+        raise RuntimeError(
+            f"Embedded Python is not available for Python {sys.version_info.major}.{sys.version_info.minor}"
+        )
+
+    candidates = [module_name]
+    if module_name != 'pythonint':
+        candidates.append('pythonint')
+    return candidates
+
+
+def get_loader_path_env_var(platform=None):
+    platform = platform or sys.platform
+    if platform.startswith('win'):
+        return 'PATH'
+    if platform == 'darwin':
+        return 'DYLD_LIBRARY_PATH'
+    return 'LD_LIBRARY_PATH'
+
+
+def is_shared_library_import_error(exc):
+    message = " ".join(str(arg) for arg in getattr(exc, "args", ()) if arg)
+    if not message:
+        message = str(exc)
+    message = message.lower()
+    return any(marker in message for marker in _SHARED_LIBRARY_ERROR_MARKERS)
+
+
+def format_loader_path_import_error(install_dir, exc):
+    bin_dir = os.path.join(install_dir, 'bin')
+    env_var = get_loader_path_env_var()
+    if sys.platform.startswith('win'):
+        return (
+            f"IRIS shared libraries could not be loaded while importing pythonint "
+            f"from {install_dir}: {exc}. Make sure {bin_dir} is registered with "
+            f"os.add_dll_directory() or present in PATH before importing IRIS."
+        )
+
+    return (
+        f"IRIS shared libraries could not be loaded while importing pythonint "
+        f"from {install_dir}: {exc}. On Unix, {env_var} must include {bin_dir} "
+        f"before Python starts; changing it after startup may be too late for "
+        f"the dynamic loader."
+    )
+
+
+def _is_path_under(path, root):
+    try:
+        path = os.path.normcase(os.path.realpath(os.fspath(path)))
+        root = os.path.normcase(os.path.realpath(os.fspath(root)))
+        return os.path.commonpath([path, root]) == root
+    except (TypeError, ValueError):
+        return False
+
+
+def validate_pythonint_module_origin(module, install_dir):
+    module_file = getattr(module, "__file__", None)
+    bin_dir = os.path.join(install_dir, 'bin')
+    python_dir = os.path.join(install_dir, 'lib', 'python')
+    allowed_roots = (bin_dir, python_dir)
+
+    if not module_file:
+        raise RuntimeError(
+            "Imported pythonint module has no __file__; cannot verify that it "
+            f"belongs to explicit IRIS installation directory {install_dir}"
+        )
+
+    if any(_is_path_under(module_file, root) for root in allowed_roots):
+        return module
+
+    expected = " or ".join(allowed_roots)
+    raise RuntimeError(
+        f"Imported pythonint from {module_file}, which does not belong to "
+        f"explicit IRIS installation directory {install_dir}. Expected it under "
+        f"{expected}."
+    )
+
+
+def import_pythonint_module_from_install_dir(install_dir, module_name=None):
+    candidates = get_pythonint_module_candidates(module_name)
+    stale_modules = {
+        name: sys.modules.pop(name)
+        for name in candidates
+        if name in sys.modules
+    }
+    importlib.invalidate_caches()
+    original_sys_path = _push_sys_paths_front(
+        (
+            os.path.join(install_dir, 'bin'),
+            os.path.join(install_dir, 'lib', 'python'),
+        )
+    )
+
+    try:
+        last_exc = None
+        for candidate in candidates:
+            try:
+                module = importlib.import_module(name=candidate)
+            except ModuleNotFoundError as exc:
+                last_exc = exc
+                continue
+            except ImportError as exc:
+                if is_shared_library_import_error(exc):
+                    raise RuntimeError(
+                        format_loader_path_import_error(install_dir, exc)
+                    ) from exc
+                last_exc = exc
+                continue
+            except OSError as exc:
+                if is_shared_library_import_error(exc):
+                    raise RuntimeError(
+                        format_loader_path_import_error(install_dir, exc)
+                    ) from exc
+                raise
+
+            return validate_pythonint_module_origin(module, install_dir)
+
+        if last_exc is not None:
+            raise last_exc
+        raise ModuleNotFoundError(candidates[0])
+    except Exception:
+        for name, module in stale_modules.items():
+            sys.modules.setdefault(name, module)
+        raise
+    finally:
+        sys.path[:] = original_sys_path
