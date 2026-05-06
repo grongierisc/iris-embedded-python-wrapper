@@ -1,7 +1,4 @@
 [Actions]
-ModifyConfig:PythonRuntimeLibrary=/test/libpython.so
-ModifyConfig:PythonRuntimeLibraryVersion=3.12
-ModifyConfig:PythonPath=/tmp/pytest-of-irisowner/pytest-1/test_create_config_linux0/venv/lib/python3.12/site-packages
 CreateResource:Name=%DB_IRISAPP_DATA,Description="IRISAPP_DATA database"
 CreateDatabase:Name=IRISAPP_DATA,Directory=/usr/irissys/mgr/IRISAPP_DATA,Resource=%DB_IRISAPP_DATA
 CreateResource:Name=%DB_IRISAPP_CODE,Description="IRISAPP_CODE database"

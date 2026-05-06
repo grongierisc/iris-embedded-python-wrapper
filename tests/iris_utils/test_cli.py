@@ -69,9 +69,11 @@ def test_create_config_linux(mock_env, monkeypatch):
 
     manager = IrisConfigManager()
     manager._get_iris_instance_name = MagicMock(return_value="IRIS")
+    manager._merge_cpf_to_iris = MagicMock()
     test_lib = "/test/libpython.so"
     
     manager.update_config(test_lib)
+    manager._merge_cpf_to_iris.assert_called_once()
     
     # open the merged cpf file
     _merge_file = Path(f"{manager.cpf_path}.{manager._merge_cpf_suffix}")
