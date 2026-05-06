@@ -20,6 +20,36 @@ def _copy_public_exports(module):
     if hasattr(module, "__getattr__"):
         globals()["__getattr__"] = getattr(module, "__getattr__")
 
+
+def _install_unavailable_getattr():
+    def __getattr__(name):
+        current_runtime = _runtime_manager.get()
+        if current_runtime.mode == 'native':
+            if current_runtime.iris is None:
+                raise RuntimeError(
+                    "iris.runtime is configured for native mode, but no native IRIS handle is bound"
+                )
+            raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+        if current_runtime.mode == 'embedded':
+            raise RuntimeError(
+                "iris.runtime is configured for embedded mode, but embedded Python is unavailable"
+            )
+        if current_runtime.iris is not None:
+            raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
+        if name == "__all__":
+            return []
+        logging.warning(
+            "Class or module '%s' not found in iris_embedded_python. "
+            "Returning a mock object. Make sure you local installation is correct.",
+            name,
+        )
+        from unittest.mock import MagicMock
+        return MagicMock()
+
+    globals()["__getattr__"] = __getattr__
+
+
 # check for install dir in environment
 # environment to check is IRISINSTALLDIR
 # if not found, raise exception and exit
@@ -43,37 +73,19 @@ if _bootstrap.is_embedded_kernel():
     _copy_public_exports(__iris_module)
 else:
 
-    __irispythonint = _bootstrap.get_pythonint_module_name()
+    __irispythonint = _bootstrap.get_pythonint_module_name() if installdir is not None else None
 
     if __irispythonint is not None:
         try:
-        # try to import the pythonint module
+            # try to import the pythonint module
             __iris_module = _bootstrap.import_pythonint_module(__irispythonint)
             globals().update(__iris_module.__dict__)
         except ImportError as e:
             logging.warning("Error importing %s: %s", __irispythonint, e)
             logging.warning("Embedded Python not available")
-            
-            def __getattr__(name):
-                current_runtime = _runtime_manager.get()
-                if current_runtime.mode == 'native':
-                    if current_runtime.iris is None:
-                        raise RuntimeError(
-                            "iris.runtime is configured for native mode, but no native IRIS handle is bound"
-                        )
-                    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
-                if current_runtime.mode == 'embedded':
-                    raise RuntimeError(
-                        "iris.runtime is configured for embedded mode, but embedded Python is unavailable"
-                    )
-                if current_runtime.iris is not None:
-                    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
-                    
-                if name == "__all__":
-                    return []
-                logging.warning(f"Class or module '{name}' not found in iris_embedded_python. Returning a mock object. Make sure you local installation is correct.")
-                from unittest.mock import MagicMock
-                return MagicMock()
+            _install_unavailable_getattr()
+    else:
+        _install_unavailable_getattr()
         
 
 # Wrap the 'cls' function to support Native API when Embedded Python isn't available

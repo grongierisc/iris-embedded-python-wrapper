@@ -37,10 +37,19 @@ repository = "https://github.com/grongierisc/iris-embedded-python-wrapper"
 issues = "https://github.com/grongierisc/iris-embedded-python-wrapper/issues"
 
 [tool.setuptools.packages.find]
-include = ["iris", "iris_utils","iris_embedded_python", "_iris_ep"]
+include = [
+    "iris",
+    "iris.*",
+    "iris_utils",
+    "iris_utils.*",
+    "iris_embedded_python",
+    "iris_embedded_python.*",
+    "_iris_ep",
+    "_iris_ep.*",
+]
 
 [tool.setuptools]
-py-modules = ["iris", "iris_utils", "iris_embedded_python", "iris_ep", "_iris_ep"]
+py-modules = ["iris_ep"]
 
 [tool.setuptools.package-data]
 "*" = ["*"]
