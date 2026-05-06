@@ -1,5 +1,6 @@
 from pathlib import Path
 from unittest.mock import MagicMock
+import sys
 import pytest
 from iris_utils._cli import IrisConfigManager, IrisVersion, python_version_string, unbind, bind
 
@@ -118,9 +119,9 @@ def test_requires_python_version_for_2025_1():
 
 
 def test_python_version_string_uses_major_minor_only():
-    assert python_version_string() == "3.11"
+    assert python_version_string() == f"{sys.version_info.major}.{sys.version_info.minor}"
 
 
 def test_get_python_path_uses_major_minor_only(mock_env):
     manager = IrisConfigManager()
-    assert manager.python_path.endswith("lib/python3.11/site-packages")
+    assert manager.python_path.endswith(f"lib/python{python_version_string()}/site-packages")

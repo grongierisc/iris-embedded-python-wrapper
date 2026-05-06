@@ -106,6 +106,7 @@ class FakeStatement:
 
     def _Prepare(self, query):
         self.prepare_seen = query
+        return 1
 
     def _Execute(self, *args, **kwargs):
         self.execute_args = args
@@ -192,6 +193,7 @@ class FakeNamespaceStatement:
 
     def _Prepare(self, query):
         self.prepare_seen = query
+        return 1
 
     def _Execute(self, *args, **kwargs):
         self.execute_namespaces.append(self.process.namespace)
@@ -232,7 +234,10 @@ def test_dbapi_embedded_execute_and_fetch(monkeypatch):
 
     cur.execute("select * from Demo")
     assert fake_statement.prepare_seen == "select * from Demo"
-    assert cur.description is None
+    assert cur.description == (
+        ("1", None, None, None, None, None, None),
+        ("2", None, None, None, None, None, None),
+    )
     assert cur.rowcount == -1
     assert cur.fetchone() == (10, "x")
     assert cur.fetchmany(1) == [(20, "y")]
@@ -318,7 +323,7 @@ def test_dbapi_embedded_prepared_params_normalize_empty_string(monkeypatch):
 
     cur.execute("select * from Demo where a=? and b=? and c=?", ("", None, "z"))
 
-    assert fake_statement.execute_args == ("\x00", None, "z")
+    assert fake_statement.execute_args == ("\x00", "", "z")
 
 
 def test_dbapi_embedded_prepared_dict_params_normalize_empty_string(monkeypatch):
@@ -344,7 +349,7 @@ def test_dbapi_embedded_prepared_dict_params_normalize_empty_string(monkeypatch)
 
     cur.execute("select * from Demo where a=:a and b=:b", {"a": "", "b": None})
 
-    assert fake_statement.execute_kwargs == {"a": "\x00", "b": None}
+    assert fake_statement.execute_kwargs == {"a": "\x00", "b": ""}
 
 
 def test_dbapi_embedded_prefers_sql_statement(monkeypatch):
@@ -740,11 +745,56 @@ def test_dbapi_native_import_preserves_public_facade(monkeypatch):
     assert parent_module.dbapi is facade
 
 
+def test_dbapi_native_import_falls_back_to_installed_distribution(monkeypatch, tmp_path):
+    package_dir = tmp_path / "iris"
+    dbapi_dir = package_dir / "dbapi"
+    dbapi_dir.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text('origin = "official"\n')
+    (dbapi_dir / "__init__.py").write_text(
+        "import iris\n\n"
+        "def connect(*args, **kwargs):\n"
+        "    return {'origin': iris.origin, 'args': args, 'kwargs': kwargs}\n"
+    )
+
+    class FakeDistribution:
+        @staticmethod
+        def locate_file(path):
+            return tmp_path / path
+
+    facade = types.ModuleType("iris")
+    facade.dbapi = object()
+
+    monkeypatch.setitem(sys.modules, "iris", facade)
+    monkeypatch.delitem(sys.modules, "iris.dbapi", raising=False)
+    monkeypatch.setattr(
+        embedded_dbapi.importlib.metadata,
+        "distribution",
+        lambda name: FakeDistribution(),
+    )
+
+    try:
+        native_dbapi = embedded_dbapi._DBAPI._import_native_dbapi()
+        conn = native_dbapi.connect(hostname="localhost")
+
+        assert conn["origin"] == "official"
+        assert conn["kwargs"]["hostname"] == "localhost"
+        assert sys.modules["iris"] is facade
+    finally:
+        sys.modules.pop("iris.dbapi", None)
+
+
 def test_dbapi_native_errors_when_official_module_missing(monkeypatch):
     def fake_import_module(name):
         raise ImportError(name)
 
     monkeypatch.setattr(embedded_dbapi.importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(
+        embedded_dbapi.importlib.metadata,
+        "distribution",
+        lambda name: (_ for _ in ()).throw(
+            embedded_dbapi.importlib.metadata.PackageNotFoundError(name)
+        ),
+    )
 
     with pytest.raises(iris.dbapi.InterfaceError, match="iris.dbapi"):
         iris.dbapi.connect(mode="native", hostname="localhost", port=1972)

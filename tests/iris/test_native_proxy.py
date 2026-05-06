@@ -6,9 +6,41 @@ import iris_ep
 
 # A mock for the IRISObject class that would be returned by Native API
 class MockIRISObject:
-    def __init__(self, class_name="iris.IRISObject"):
+    def __init__(self, db=None, class_name="iris.IRISObject"):
+        self._db = db
         # Native API objects have "__class__.__name__ == 'IRISObject'" 
         self.__class__.__name__ = "IRISObject"
+
+    def invoke(self, method_name, *args):
+        if method_name == "%ClassName":
+            return "User.Bar"
+        if self._db is not None:
+            return self._db.invoke(self, method_name, *args)
+        return "MethodSuccess"
+
+    def get(self, prop_name):
+        if self._db is not None:
+            return self._db.get(self, prop_name)
+        return "Value"
+
+    def set(self, prop_name, value):
+        if self._db is not None:
+            self._db.set(self, prop_name, value)
+
+
+class MockPropertyResult:
+    def __init__(self, rows):
+        self.rows = rows
+        self.index = -1
+
+    def invoke(self, method_name, *args):
+        if method_name != "%Next":
+            raise Exception("Method not found")
+        self.index += 1
+        return self.index < len(self.rows)
+
+    def get(self, prop_name):
+        return self.rows[self.index].get(prop_name)
         
 class MockIRISNativeConnection:
     def __init__(self):
@@ -19,8 +51,41 @@ class MockIRISNativeConnection:
     def invokeClassMethod(self, class_name, method_name, *args):
         self.invoked_methods.append((class_name, method_name, args))
         if class_name == "User.Bar" and method_name == "%OpenId":
-            return MockIRISObject()
+            return MockIRISObject(db=self)
         return "Success"
+
+    def classMethodValue(self, class_name, method_name, *args):
+        return self.invokeClassMethod(class_name, method_name, *args)
+
+    def classMethodObject(self, class_name, method_name, *args):
+        if class_name == "%SQL.Statement" and method_name == "%ExecDirect":
+            return MockPropertyResult([
+                {
+                    "Name": "Name",
+                    "Type": "%Library.String",
+                    "RuntimeType": "%Library.String",
+                    "Collection": None,
+                },
+                {
+                    "Name": "%State",
+                    "Type": "%Library.String",
+                    "RuntimeType": "%Library.String",
+                    "Collection": None,
+                },
+                {
+                    "Name": "Payload",
+                    "Type": "%Library.DynamicObject",
+                    "RuntimeType": "%Library.DynamicObject",
+                    "Collection": None,
+                },
+                {
+                    "Name": "Blob",
+                    "Type": "%Library.Binary",
+                    "RuntimeType": "%Library.Binary",
+                    "Collection": None,
+                },
+            ])
+        raise Exception("Method not found")
         
     def invoke(self, oref, method_name, *args):
         self.invoked_methods.append(("Instance", method_name, args))
@@ -56,6 +121,9 @@ class MockIRISHandleLikeConnection:
     def invokeClassMethod(self, class_name, method_name, *args):
         self.invoked_methods.append((class_name, method_name, args))
         return "Success"
+
+    def classMethodValue(self, class_name, method_name, *args):
+        return self.invokeClassMethod(class_name, method_name, *args)
 
     def invoke(self, oref, method_name, *args):
         return "MethodSuccess"

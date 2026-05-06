@@ -1,12 +1,18 @@
 services:
   iris:
-    image: containers.intersystems.com/intersystems/irishealth-community:latest-cd
-    restart: always
+    image: containers.intersystems.com/intersystems/iris-community:${IRIS_IMAGE_TAG:-latest-cd}
+    restart: unless-stopped
     environment:
-      - ISC_CPF_MERGE_FILE=/irisdev/app/merge.cpf
-    ports: 
-      - 1972
-      - 52795:52773
-      - 53773
+      ISC_CPF_MERGE_FILE: /irisdev/app/merge.cpf
+    ports:
+      - "${IRIS_SUPERSERVER_PORT:-1972}"
+      - "${IRIS_WEB_PORT:-52773}"
+      - "${IRIS_PRIVATE_WEB_PORT:-53773}"
     volumes:
       - ./:/irisdev/app
+    healthcheck:
+      test: ["CMD-SHELL", "test -x /usr/irissys/dev/Container/waitReady.sh && /usr/irissys/dev/Container/waitReady.sh -m 5 || /usr/irissys/dev/Cloud/ICM/waitReady.sh -m 5"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 60s

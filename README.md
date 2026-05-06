@@ -82,6 +82,28 @@ $env:IRISNAMESPACE="USER"
 pip install iris-embedded-python-wrapper
 ```
 
+## Running tests
+
+Run the test suite in Docker with the vanilla official InterSystems IRIS community image:
+
+```bash
+./scripts/test-docker.sh
+```
+
+Pass any pytest selector or option after the script name:
+
+```bash
+./scripts/test-docker.sh tests/iris/test_dbapi.py -q
+```
+
+The script starts `docker-compose-test-preview.yml`, waits for IRIS, unlocks the default test passwords, creates a Python virtual environment inside the IRIS container, installs this package, and runs `python3 -m pytest`. By default `IRIS_E2E_MODES=embedded,remote`, so remote DB-API e2e tests run and the embedded runtime is required from `python3`. Embedded DB-API SQL e2e tests run when `%SQL.Statement` can prepare SQL from the selected `python3` runtime.
+
+To test another IRIS image tag:
+
+```bash
+IRIS_IMAGE_TAG=latest-preview ./scripts/test-docker.sh
+```
+
 # Usage
 
 You can use this module in three ways:
