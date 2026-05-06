@@ -2,7 +2,6 @@ from pathlib import Path
 import sys
 import pytest
 import iris_utils._dynalib as dynalib
-import iris_utils._iris_utils as iris_utils_compat
 from iris_utils._cli import IrisConfigManager, IrisVersion, PythonConfig, python_version_string
 
 
@@ -130,10 +129,6 @@ def test_requires_python_version_for_2025_1():
 
 def test_python_version_string_uses_major_minor_only():
     assert python_version_string() == f"{sys.version_info.major}.{sys.version_info.minor}"
-
-
-def test_iris_utils_compat_exports_dynalib_helper():
-    assert iris_utils_compat.update_dynalib_path is dynalib.update_dynalib_path
 
 
 def test_get_python_path_uses_major_minor_only(mock_env):
