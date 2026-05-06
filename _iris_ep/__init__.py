@@ -1,82 +1,54 @@
 import os
-import sys
-import importlib
 import logging
 
 logging.basicConfig(level=logging.INFO)
 
 from .iris_ipm import ipm
 from ._dbapi import make_dbapi
-from iris_utils import NativeClassProxy, runtime as _runtime_manager, update_dynalib_path
+from . import _bootstrap
+from iris_utils import NativeClassProxy, runtime as _runtime_manager
+
+
+def _copy_public_exports(module):
+    exported_names = getattr(module, "__all__", None)
+    if exported_names is None:
+        exported_names = [name for name in module.__dict__ if not name.startswith("_")]
+
+    for name in exported_names:
+        globals()[name] = getattr(module, name)
+
+    if hasattr(module, "__getattr__"):
+        globals()["__getattr__"] = getattr(module, "__getattr__")
 
 # check for install dir in environment
 # environment to check is IRISINSTALLDIR
 # if not found, raise exception and exit
 # ISC_PACKAGE_INSTALLDIR - defined by default in Docker images
-installdir = os.environ.get('IRISINSTALLDIR') or os.environ.get('ISC_PACKAGE_INSTALLDIR')
-__sysversion_info = sys.version_info
-__osname = os.name
+installdir = _bootstrap.get_install_dir_from_env()
 
 _runtime_manager.configure(install_dir=installdir)
-
-def _configure_install_dir(path):
-    if not path:
-        raise ValueError("path must be a non-empty IRIS installation directory")
-
-    install_dir = os.path.abspath(os.fspath(path))
-    bin_dir = os.path.join(install_dir, 'bin')
-    python_dir = os.path.join(install_dir, 'lib', 'python')
-
-    if bin_dir not in sys.path:
-        sys.path.append(bin_dir)
-    if python_dir not in sys.path:
-        sys.path.append(python_dir)
-
-    update_dynalib_path(bin_dir)
-    return install_dir
-
 
 if installdir is None:
     logging.warning("IRISINSTALLDIR or ISC_PACKAGE_INSTALLDIR environment variable is not set")
     logging.warning("Embedded Python not configured; call iris.connect(path=...) to configure it")
 else:
-    _configure_install_dir(installdir)
+    _bootstrap.configure_install_dir(installdir)
 
 # save working directory
 __ospath = os.getcwd()
 
-if bool(getattr(sys, "_embedded", 0)):
+if _bootstrap.is_embedded_kernel():
     # python(libpython.so) inside iris
-    from irisep import *
-    from irisep import __getattr__
+    __iris_module = _bootstrap.import_embedded_kernel_module()
+    _copy_public_exports(__iris_module)
 else:
 
-    __irispythonint = None
-
-    if __osname=='nt':
-        if __sysversion_info.minor==9:
-            __irispythonint = 'pythonint39'
-        elif __sysversion_info.minor==10:
-            __irispythonint = 'pythonint310'
-        elif __sysversion_info.minor==11:
-            __irispythonint = 'pythonint311'
-        elif __sysversion_info.minor==12:
-            __irispythonint = 'pythonint312'
-        elif __sysversion_info.minor==13:
-            __irispythonint = 'pythonint313'
-        elif __sysversion_info.minor==14:
-            __irispythonint = 'pythonint314'
-    else:
-        __irispythonint = 'pythonint'
+    __irispythonint = _bootstrap.get_pythonint_module_name()
 
     if __irispythonint is not None:
         try:
         # try to import the pythonint module
-            try:
-                __iris_module = importlib.import_module(name=__irispythonint)
-            except ModuleNotFoundError:
-                __irispythonint = 'pythonint'
-                __iris_module = importlib.import_module(name=__irispythonint)
+            __iris_module = _bootstrap.import_pythonint_module(__irispythonint)
             globals().update(__iris_module.__dict__)
         except ImportError as e:
             logging.warning("Error importing %s: %s", __irispythonint, e)
@@ -109,20 +81,6 @@ _original_cls = globals().get('cls')
 _original_connect = globals().get('connect')
 _fallback_connect = None
 
-def _get_pythonint_module_name():
-    if __osname == 'nt':
-        windows_modules = {
-            9: 'pythonint39',
-            10: 'pythonint310',
-            11: 'pythonint311',
-            12: 'pythonint312',
-            13: 'pythonint313',
-            14: 'pythonint314',
-        }
-        return windows_modules.get(__sysversion_info.minor)
-    return 'pythonint'
-
-
 def _install_embedded_module(module):
     global _original_cls, _original_connect
 
@@ -148,16 +106,8 @@ def _install_embedded_module(module):
 
 
 def _load_embedded_backend(path):
-    install_dir = _configure_install_dir(path)
-    module_name = _get_pythonint_module_name()
-    if module_name is None:
-        raise RuntimeError(f"Embedded Python is not available for Python {sys.version_info.major}.{sys.version_info.minor}")
-
-    try:
-        module = importlib.import_module(name=module_name)
-    except ModuleNotFoundError:
-        module = importlib.import_module(name='pythonint')
-
+    install_dir = _bootstrap.configure_install_dir(path)
+    module = _bootstrap.import_pythonint_module()
     _install_embedded_module(module)
     return _runtime_manager.configure(mode='embedded', install_dir=install_dir)
 

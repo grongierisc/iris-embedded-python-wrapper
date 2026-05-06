@@ -81,8 +81,8 @@ def test_connect_path_enables_embedded_runtime(monkeypatch, tmp_path):
 
     monkeypatch.setattr(_iris_ep, "_original_cls", None)
     monkeypatch.setattr(_iris_ep, "_original_connect", None)
-    monkeypatch.setattr(_iris_ep.importlib, "import_module", fake_import_module)
-    monkeypatch.setattr(_iris_ep, "update_dynalib_path", dynalib_paths.append)
+    monkeypatch.setattr(_iris_ep._bootstrap.importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(_iris_ep._bootstrap, "update_dynalib_path", dynalib_paths.append)
 
     try:
         context = iris.connect(path=install_dir)
