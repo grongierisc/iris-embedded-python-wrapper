@@ -159,3 +159,25 @@ def test_update_dynalib_path_windows_adds_dll_directory(monkeypatch):
     assert calls == [dynalib_path]
     assert dynalib._DLL_DIRECTORY_HANDLES == handles
     assert dynalib_path in dynalib.os.environ["PATH"]
+
+
+@pytest.mark.parametrize(
+    ("platform", "env_var"),
+    [
+        ("darwin", "DYLD_LIBRARY_PATH"),
+        ("linux", "LD_LIBRARY_PATH"),
+    ],
+)
+def test_update_dynalib_path_unix_does_not_mutate_loader_env(monkeypatch, platform, env_var):
+    set_flags = []
+
+    monkeypatch.setattr(dynalib.sys, "platform", platform)
+    monkeypatch.setattr(dynalib.sys, "getdlopenflags", lambda: 0x2, raising=False)
+    monkeypatch.setattr(dynalib.sys, "setdlopenflags", set_flags.append, raising=False)
+    monkeypatch.setattr(dynalib.os, "RTLD_GLOBAL", 0x100, raising=False)
+    monkeypatch.setenv(env_var, "/already/set")
+
+    dynalib.update_dynalib_path("/opt/intersystems/iris/bin")
+
+    assert dynalib.os.environ[env_var] == "/already/set"
+    assert set_flags == [0x102]

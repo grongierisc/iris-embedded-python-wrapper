@@ -30,10 +30,9 @@ Set the following environment variables :
 Embedded-local execution from regular `python3` on Unix needs the loader path
 configured before Python starts. `iris.connect(path=...)` can configure Python
 import paths at runtime, but it cannot repair Unix dynamic loader resolution
-after startup. When embedded-local is configured through `IRISINSTALLDIR`,
-`ISC_PACKAGE_INSTALLDIR`, or `path=...`, the wrapper emits a `RuntimeWarning`
-on Unix if the loader-path variable does not already include the IRIS `bin`
-directory.
+after startup. When embedded-local loading is explicitly requested, the wrapper
+emits a `RuntimeWarning` on Unix if the loader-path variable does not already
+include the IRIS `bin` directory.
 
 ### For Linux and MacOS
 
@@ -189,7 +188,7 @@ native library path still needs to be configured before Python starts as shown
 in the environment setup section.
 The path must point to an IRIS installation directory with `bin` and
 `lib/python` subdirectories; invalid paths fail before the wrapper mutates
-Python import paths or loader paths. For explicit `path=...`, the wrapper also
+Python import paths. For explicit `path=...`, the wrapper also
 removes stale `pythonint` modules for the import attempt and verifies that the
 loaded `pythonint.__file__` is under that installation's `bin` or `lib/python`
 directory.
