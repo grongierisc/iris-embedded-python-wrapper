@@ -113,7 +113,23 @@ def configure_install_dir(path, *, warn_loader_path=False):
 
 
 def is_embedded_kernel():
-    return bool(getattr(sys, "_embedded", 0))
+    if bool(getattr(sys, "_embedded", 0)):
+        return True
+
+    public_iris = sys.modules.get('iris')
+    if public_iris is None or getattr(public_iris, "__file__", None) is not None:
+        return False
+
+    return callable(getattr(public_iris, "__dict__", {}).get("cls"))
+
+
+def get_preloaded_iris_kernel_module():
+    public_iris = sys.modules.get('iris')
+    if public_iris is None or getattr(public_iris, "__file__", None) is not None:
+        return None
+    if callable(getattr(public_iris, "__dict__", {}).get("cls")):
+        return public_iris
+    return None
 
 
 def get_pythonint_module_name(version_info=None, os_name=None):
@@ -135,7 +151,15 @@ def get_pythonint_module_name(version_info=None, os_name=None):
 
 
 def import_embedded_kernel_module():
-    return importlib.import_module('irisep')
+    try:
+        return importlib.import_module('irisep')
+    except ModuleNotFoundError as exc:
+        if exc.name != 'irisep':
+            raise
+        module = get_preloaded_iris_kernel_module()
+        if module is not None:
+            return module
+        raise
 
 
 def import_pythonint_module(module_name=None):

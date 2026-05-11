@@ -46,12 +46,12 @@ def test_import_iris_from_iris_python_kernel_uses_wrapper():
         import sys
         import iris
 
-        assert getattr(sys, "_embedded", 0)
         assert hasattr(iris, "runtime")
         assert hasattr(iris, "connect")
         assert hasattr(iris, "cls")
         assert iris.runtime.get().state == "embedded-kernel"
         assert iris.cls("%SYSTEM.Version").GetVersion()
+        assert iris.system.Version.GetVersion()
         print("KERNEL_IMPORT_OK")
         """
     )
@@ -91,12 +91,12 @@ def test_import_iris_from_session_python_shell_uses_wrapper():
         import sys
         import iris
 
-        assert getattr(sys, "_embedded", 0)
         assert hasattr(iris, "runtime")
         assert hasattr(iris, "connect")
         assert hasattr(iris, "cls")
         assert iris.runtime.get().state == "embedded-kernel"
         assert iris.cls("%SYSTEM.Version").GetVersion()
+        assert iris.system.Version.GetVersion()
         print("SESSION_PY_IMPORT_OK")
         quit()
         halt

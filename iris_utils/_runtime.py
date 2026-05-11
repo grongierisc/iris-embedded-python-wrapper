@@ -14,7 +14,14 @@ def get_install_dir() -> Optional[str]:
 
 
 def is_embedded_kernel() -> bool:
-    return bool(getattr(sys, '_embedded', 0))
+    if bool(getattr(sys, '_embedded', 0)):
+        return True
+
+    public_iris = sys.modules.get('iris')
+    if public_iris is None or getattr(public_iris, '__file__', None) is not None:
+        return False
+
+    return callable(getattr(public_iris, '__dict__', {}).get('cls'))
 
 
 def get_pythonint_module_name(

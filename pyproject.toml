@@ -3,7 +3,7 @@ requires = ["setuptools", "wheel"]
 
 [project]
 name = "iris-embedded-python-wrapper"
-version = "0.5.18"
+version = "0.5.19"
 description = "Wrapper for embedded python on InterSystems IRIS"
 readme = "README.md"
 authors = [
@@ -49,7 +49,7 @@ include = [
 ]
 
 [tool.setuptools]
-py-modules = ["iris_ep"]
+py-modules = ["iris_ep", "sitecustomize"]
 
 [tool.setuptools.package-data]
 "*" = ["*"]

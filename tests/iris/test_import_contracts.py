@@ -101,6 +101,86 @@ def test_import_iris_without_install_dir_does_not_probe_pythonint(tmp_path):
     assert "NO_PYTHONINT_PROBE_OK" in result.stdout
 
 
+def test_sitecustomize_patches_preloaded_iris_in_embedded_kernel(tmp_path):
+    result = _fresh_python(
+        """
+        import sys
+        import types
+
+        preloaded_iris = types.ModuleType("iris")
+        preloaded_iris.cls = lambda class_name: {"preloaded": class_name}
+        sys.modules["iris"] = preloaded_iris
+
+        class FakeVersion:
+            @staticmethod
+            def GetVersion():
+                return "IRIS fake kernel version"
+
+        def fake_cls(class_name):
+            if class_name == "%SYSTEM.Version":
+                return FakeVersion
+            return {"class": class_name}
+
+        irisep = types.ModuleType("irisep")
+        irisep.cls = fake_cls
+        sys.modules["irisep"] = irisep
+
+        import sitecustomize
+        assert sitecustomize._patch_preloaded_iris()
+
+        import iris
+        assert iris is preloaded_iris
+        assert iris.runtime.state == "embedded-kernel"
+        assert iris.cls("%SYSTEM.Version").GetVersion() == "IRIS fake kernel version"
+        assert iris.system.Version.GetVersion() == "IRIS fake kernel version"
+        print("SITECUSTOMIZE_PRELOADED_IRIS_OK")
+        """,
+        tmp_path,
+    )
+
+    _assert_fresh_python_ok(result)
+    assert "SITECUSTOMIZE_PRELOADED_IRIS_OK" in result.stdout
+
+
+def test_sitecustomize_patches_preloaded_iris_without_irisep(tmp_path):
+    result = _fresh_python(
+        """
+        import sys
+        import types
+
+        preloaded_iris = types.ModuleType("iris")
+
+        class FakeVersion:
+            @staticmethod
+            def GetVersion():
+                return "IRIS fake builtin version"
+
+        def fake_cls(class_name):
+            if class_name == "%SYSTEM.Version":
+                return FakeVersion
+            return {"class": class_name}
+
+        preloaded_iris.cls = fake_cls
+        sys.modules["iris"] = preloaded_iris
+        sys.modules.pop("irisep", None)
+
+        import sitecustomize
+        assert sitecustomize._patch_preloaded_iris()
+
+        import iris
+        assert iris is preloaded_iris
+        assert iris.runtime.state == "embedded-kernel"
+        assert iris.cls("%SYSTEM.Version").GetVersion() == "IRIS fake builtin version"
+        assert iris.system.Version.GetVersion() == "IRIS fake builtin version"
+        print("SITECUSTOMIZE_PRELOADED_IRIS_WITHOUT_IRISEP_OK")
+        """,
+        tmp_path,
+    )
+
+    _assert_fresh_python_ok(result)
+    assert "SITECUSTOMIZE_PRELOADED_IRIS_WITHOUT_IRISEP_OK" in result.stdout
+
+
 @pytest.mark.skipif(sys.platform.startswith("win"), reason="Unix loader-path warning")
 @pytest.mark.parametrize("install_env", ["IRISINSTALLDIR", "ISC_PACKAGE_INSTALLDIR"])
 def test_import_iris_with_install_env_warns_when_loader_path_wrong(tmp_path, install_env):

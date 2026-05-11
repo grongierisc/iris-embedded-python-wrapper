@@ -231,6 +231,11 @@ class RuntimeFacade:
         installdir = _bootstrap.get_install_dir_from_env()
         self.runtime_manager.configure(install_dir=installdir)
 
+        if _bootstrap.is_embedded_kernel():
+            module = _bootstrap.import_embedded_kernel_module()
+            self.install_embedded_module(module)
+            return
+
         if installdir is None:
             logging.warning("IRISINSTALLDIR or ISC_PACKAGE_INSTALLDIR environment variable is not set")
             logging.warning("Embedded Python not configured; call iris.connect(path=...) to configure it")
@@ -239,11 +244,6 @@ class RuntimeFacade:
                 installdir,
                 warn_loader_path=not _bootstrap.is_embedded_kernel(),
             )
-
-        if _bootstrap.is_embedded_kernel():
-            module = _bootstrap.import_embedded_kernel_module()
-            self.install_embedded_module(module)
-            return
 
         pythonint_module_name = (
             _bootstrap.get_pythonint_module_name() if installdir is not None else None
@@ -319,10 +319,11 @@ class RuntimeFacade:
         return context
 
     def install_embedded_convenience_symbols(self, module: Any):
-        if hasattr(module, "system"):
-            self.module_globals["system"] = getattr(module, "system")
-        else:
-            self.module_globals["system"] = EmbeddedSystemProxy(self)
+        # Some embedded kernel modules resolve unknown package names through
+        # __getattr__ and return an iris.package placeholder.  Keep
+        # iris.system.* routed through cls("%SYSTEM.*") so convenience calls
+        # such as iris.system.Version.GetVersion() behave like class access.
+        self.module_globals["system"] = EmbeddedSystemProxy(self)
 
         if hasattr(module, "sql"):
             self.module_globals["sql"] = getattr(module, "sql")
@@ -474,4 +475,5 @@ def initialize_module(module_globals: dict[str, Any], module_name: str) -> Runti
         install_default_getattr(module_globals, module_name)
     facade.install_public_symbols()
     facade.finalize_all()
+    facade.sync_public_modules()
     return facade

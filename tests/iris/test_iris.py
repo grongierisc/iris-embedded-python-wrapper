@@ -157,6 +157,56 @@ def test_connect_path_enables_embedded_runtime(monkeypatch, tmp_path):
         _restore_module_attrs(module_attrs)
 
 
+def test_embedded_system_proxy_overrides_backend_package_placeholder(monkeypatch, tmp_path):
+    iris.runtime.reset()
+    module_attrs = _snapshot_module_attrs("system", "__getattr__")
+
+    install_dir = tmp_path / "iris"
+    (install_dir / "bin").mkdir(parents=True)
+    (install_dir / "lib" / "python").mkdir(parents=True)
+    _set_loader_path(monkeypatch, install_dir)
+
+    class FakePackage:
+        def __getattr__(self, name):
+            return self
+
+        def __call__(self, *args, **kwargs):
+            return self
+
+    class FakeVersion:
+        @staticmethod
+        def GetVersion():
+            return "IRIS fake version"
+
+    def fake_cls(class_name):
+        if class_name == "%SYSTEM.Version":
+            return FakeVersion
+        return {"class": class_name}
+
+    fake_module = types.SimpleNamespace(
+        __file__=str(install_dir / "bin" / "pythonint.so"),
+        cls=fake_cls,
+        system=FakePackage(),
+    )
+
+    def fake_import_module(name):
+        if name == "pythonint":
+            return fake_module
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(_iris_ep._bootstrap.importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(_iris_ep._bootstrap, "update_dynalib_path", lambda path: None)
+
+    try:
+        iris.connect(path=install_dir)
+
+        assert iris.system.Version.GetVersion() == "IRIS fake version"
+        assert not isinstance(iris.system, FakePackage)
+    finally:
+        iris.runtime.reset()
+        _restore_module_attrs(module_attrs)
+
+
 def test_connect_path_rejects_native_arguments(tmp_path):
     with pytest.raises(TypeError, match="path"):
         iris.connect("localhost", path=tmp_path)
