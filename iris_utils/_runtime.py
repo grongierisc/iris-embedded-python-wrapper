@@ -1,58 +1,15 @@
-import importlib
-import os
-import sys
 from dataclasses import dataclass
 from typing import Any, Literal, Optional
+
+from ._embedded_env import (
+    can_import_embedded_python,
+    get_install_dir_from_env,
+    is_embedded_kernel,
+)
 
 RuntimeMode = Literal['auto', 'embedded', 'native']
 RuntimeState = Literal['embedded-kernel', 'embedded-local', 'native-remote', 'unavailable']
 _UNSET = object()
-
-
-def get_install_dir() -> Optional[str]:
-    return os.environ.get('IRISINSTALLDIR') or os.environ.get('ISC_PACKAGE_INSTALLDIR')
-
-
-def is_embedded_kernel() -> bool:
-    if bool(getattr(sys, '_embedded', 0)):
-        return True
-
-    public_iris = sys.modules.get('iris')
-    if public_iris is None or getattr(public_iris, '__file__', None) is not None:
-        return False
-
-    return callable(getattr(public_iris, '__dict__', {}).get('cls'))
-
-
-def get_pythonint_module_name(
-    version_info: Optional[sys.version_info] = None,
-    os_name: Optional[str] = None,
-) -> Optional[str]:
-    version_info = version_info or sys.version_info
-    os_name = os_name or os.name
-    if os_name == 'nt':
-        windows_modules = {
-            9: 'pythonint39',
-            10: 'pythonint310',
-            11: 'pythonint311',
-            12: 'pythonint312',
-            13: 'pythonint313',
-            14: 'pythonint314',
-        }
-        return windows_modules.get(version_info.minor)
-    return 'pythonint'
-
-
-def can_import_embedded_python(module_name: Optional[str] = None) -> bool:
-    if module_name is None:
-        module_name = get_pythonint_module_name()
-    if module_name is None:
-        return False
-    try:
-        importlib.import_module(module_name)
-        return True
-    except ImportError:
-        return False
 
 
 @dataclass
@@ -73,7 +30,7 @@ class RuntimeContext:
 
     def refresh(self) -> 'RuntimeContext':
         if not self.install_dir_explicit:
-            self.install_dir = get_install_dir()
+            self.install_dir = get_install_dir_from_env()
         if is_embedded_kernel():
             self.embedded_available = True
             self.state = 'embedded-kernel'

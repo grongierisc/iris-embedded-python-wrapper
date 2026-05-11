@@ -1,5 +1,7 @@
 import importlib
 
+from ._module_exports import copy_public_exports
+
 
 def extend_official_driver_path(module_globals):
     try:
@@ -27,15 +29,6 @@ def extend_official_driver_path(module_globals):
     return package_dir
 
 
-def copy_public_exports(module, module_globals):
-    exported_names = getattr(module, "__all__", None)
-    if exported_names is None:
-        exported_names = [name for name in module.__dict__ if not name.startswith("_")]
-
-    for name in exported_names:
-        module_globals[name] = getattr(module, name)
-
-
 def load_driver_symbols(module_globals):
     extend_official_driver_path(module_globals)
 
@@ -60,8 +53,14 @@ def load_driver_symbols(module_globals):
     return False
 
 
+def is_wrapper_connect(candidate):
+    return getattr(candidate, "__module__", "") == "_iris_ep._runtime_facade"
+
+
 def rebind_wrapper_symbols(module_globals):
     driver_connect = module_globals.get("connect")
+    if is_wrapper_connect(driver_connect):
+        driver_connect = None
     module_globals["_driver_connect"] = driver_connect
 
     try:

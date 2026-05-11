@@ -6,26 +6,33 @@ import warnings
 from typing import Any
 
 from iris_utils import NativeClassProxy, runtime as _runtime_manager
+from iris_utils._module_exports import copy_public_exports
 
 from . import _bootstrap
 from ._dbapi import make_dbapi
 
 _WRAPPER_EXPORTS = {"_runtime", "runtime", "dbapi", "cls", "connect"}
+_NATIVE_CONNECT_KWARGS = {
+    "hostname",
+    "host",
+    "port",
+    "namespace",
+    "username",
+    "password",
+    "connectionstr",
+    "timeout",
+    "sharedmemory",
+    "logfile",
+    "sslconfig",
+    "autoCommit",
+    "isolationLevel",
+    "featureOptions",
+    "accessToken",
+}
 
 
-def copy_public_exports(module: Any, module_globals: dict[str, Any], skip=()) -> None:
-    skipped = set(skip)
-    exported_names = getattr(module, "__all__", None)
-    if exported_names is None:
-        exported_names = [name for name in module.__dict__ if not name.startswith("_")]
-
-    for name in exported_names:
-        if name in skipped:
-            continue
-        module_globals[name] = getattr(module, name)
-
-    if hasattr(module, "__getattr__"):
-        module_globals["__getattr__"] = getattr(module, "__getattr__")
+def native_connection_requested(args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+    return bool(args) or any(name in kwargs for name in _NATIVE_CONNECT_KWARGS)
 
 
 def install_unavailable_getattr(module_globals: dict[str, Any], module_name: str) -> None:
@@ -242,7 +249,8 @@ class RuntimeFacade:
         else:
             _bootstrap.configure_install_dir(
                 installdir,
-                warn_loader_path=not _bootstrap.is_embedded_kernel(),
+                warn_loader_path=False,
+                update_loader_path=False,
             )
 
         pythonint_module_name = (
@@ -307,7 +315,12 @@ class RuntimeFacade:
 
     def install_embedded_module(self, module: Any):
         module_getattr = getattr(module, "__getattr__", None)
-        copy_public_exports(module, self.module_globals, skip=_WRAPPER_EXPORTS)
+        copy_public_exports(
+            module,
+            self.module_globals,
+            skip=_WRAPPER_EXPORTS,
+            include_getattr=True,
+        )
         self.install_embedded_convenience_symbols(module)
         if callable(module_getattr):
             self.module_globals["__getattr__"] = module_getattr
@@ -377,7 +390,10 @@ class RuntimeFacade:
                     raise RuntimeError(
                         "Embedded Python is unavailable; configure IRISINSTALLDIR or call iris.connect(path=...)"
                     )
-                _bootstrap.configure_install_dir(install_dir)
+                _bootstrap.configure_install_dir(
+                    install_dir,
+                    warn_loader_path=required,
+                )
                 module = _bootstrap.import_pythonint_module()
         except Exception:
             if required:
@@ -455,11 +471,24 @@ class RuntimeFacade:
             native_connect = getattr(current_runtime, "native_connect", None)
             if callable(native_connect):
                 return native_connect(*args, **kwargs)
-            raise RuntimeError("iris.connect requires an installed native driver")
+            raise RuntimeError(
+                "iris.connect requires an installed Native API driver. "
+                "If intersystems-irispython is installed, check that the process "
+                "is not forcing incompatible IRIS shared libraries through "
+                "DYLD_LIBRARY_PATH or LD_LIBRARY_PATH."
+            )
 
         native_connect = getattr(current_runtime, "native_connect", None)
         if callable(native_connect):
             return native_connect(*args, **kwargs)
+
+        if native_connection_requested(args, kwargs):
+            raise RuntimeError(
+                "iris.connect received Native API connection arguments, but no "
+                "Native API driver is available. Install intersystems-irispython "
+                "and avoid forcing incompatible IRIS shared libraries through "
+                "DYLD_LIBRARY_PATH or LD_LIBRARY_PATH."
+            )
 
         embedded_connect = self.get_embedded_connect(current_runtime)
         if callable(embedded_connect):

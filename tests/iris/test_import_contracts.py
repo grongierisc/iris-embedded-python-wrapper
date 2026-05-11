@@ -183,7 +183,7 @@ def test_sitecustomize_patches_preloaded_iris_without_irisep(tmp_path):
 
 @pytest.mark.skipif(sys.platform.startswith("win"), reason="Unix loader-path warning")
 @pytest.mark.parametrize("install_env", ["IRISINSTALLDIR", "ISC_PACKAGE_INSTALLDIR"])
-def test_import_iris_with_install_env_warns_when_loader_path_wrong(tmp_path, install_env):
+def test_import_iris_with_install_env_does_not_warn_or_mutate_loader_path(tmp_path, install_env):
     install_dir = tmp_path / "iris"
     other_dir = tmp_path / "other"
     (install_dir / "bin").mkdir(parents=True)
@@ -192,14 +192,16 @@ def test_import_iris_with_install_env_warns_when_loader_path_wrong(tmp_path, ins
     env_var = "DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH"
 
     result = _fresh_python(
-        """
+        f"""
+        import os
         import warnings
 
         warnings.simplefilter("always", RuntimeWarning)
         import iris
 
         assert iris.runtime.get().install_dir
-        print("INSTALL_ENV_LOADER_WARNING_OK")
+        print("LOADER_PATH_AFTER=" + os.environ.get({env_var!r}, ""))
+        print("INSTALL_ENV_NO_LOADER_WARNING_OK")
         """,
         tmp_path,
         extra_env={
@@ -209,8 +211,9 @@ def test_import_iris_with_install_env_warns_when_loader_path_wrong(tmp_path, ins
     )
 
     _assert_fresh_python_ok(result)
-    assert "INSTALL_ENV_LOADER_WARNING_OK" in result.stdout
-    assert f"{env_var} does not include {install_dir / 'bin'}" in result.stderr
+    assert "INSTALL_ENV_NO_LOADER_WARNING_OK" in result.stdout
+    assert f"LOADER_PATH_AFTER={other_dir}" in result.stdout
+    assert f"{env_var} does not include {install_dir / 'bin'}" not in result.stderr
 
 
 def test_native_dbapi_import_contract_preserves_wrapper_parent(tmp_path):

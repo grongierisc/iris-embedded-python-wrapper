@@ -80,3 +80,36 @@ def test_driver_loader_rebinds_wrapper_symbols(monkeypatch):
     assert module_globals["runtime"] is iris_ep_module.runtime
     assert module_globals["dbapi"] == "dbapi"
     assert module_globals["cls"] == "cls"
+
+
+def test_driver_loader_does_not_bind_wrapper_connect_as_native_driver(monkeypatch):
+    backend_bindings = {}
+
+    def wrapper_connect():
+        raise AssertionError("wrapper connect should not be treated as a driver")
+
+    wrapper_connect.__module__ = "_iris_ep._runtime_facade"
+
+    class Runtime:
+        @staticmethod
+        def bind_backends(**kwargs):
+            backend_bindings.update(kwargs)
+
+    iris_ep_module = types.ModuleType("iris_ep")
+    iris_ep_module.connect = wrapper_connect
+    iris_ep_module.runtime = Runtime()
+    iris_ep_module.dbapi = "dbapi"
+    iris_ep_module.cls = "cls"
+
+    monkeypatch.setitem(sys.modules, "iris_ep", iris_ep_module)
+
+    module_globals = {"connect": wrapper_connect}
+
+    _driver_loader.rebind_wrapper_symbols(module_globals)
+
+    assert backend_bindings == {}
+    assert module_globals["_driver_connect"] is None
+    assert module_globals["connect"] is wrapper_connect
+    assert module_globals["runtime"] is iris_ep_module.runtime
+    assert module_globals["dbapi"] == "dbapi"
+    assert module_globals["cls"] == "cls"
