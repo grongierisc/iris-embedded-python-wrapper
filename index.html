@@ -90,10 +90,9 @@
 <p>Embedded-local execution from regular <code>python3</code> on Unix needs the loader path
 configured before Python starts. <code>iris.connect(path=...)</code> can configure Python
 import paths at runtime, but it cannot repair Unix dynamic loader resolution
-after startup. When embedded-local is configured through <code>IRISINSTALLDIR</code>,
-<code>ISC_PACKAGE_INSTALLDIR</code>, or <code>path=...</code>, the wrapper emits a <code>RuntimeWarning</code>
-on Unix if the loader-path variable does not already include the IRIS <code>bin</code>
-directory.</p>
+after startup. When embedded-local loading is explicitly requested, the wrapper
+emits a <code>RuntimeWarning</code> on Unix if the loader-path variable does not already
+include the IRIS <code>bin</code> directory.</p>
 <h3 id="for-linux-and-macos">For Linux and MacOS</h3>
 <p>For Linux and MacOS, you can set the environment variables as follows:</p>
 <pre><code class="language-bash">export IRISINSTALLDIR=/opt/iris
@@ -203,7 +202,7 @@ native library path still needs to be configured before Python starts as shown
 in the environment setup section.
 The path must point to an IRIS installation directory with <code>bin</code> and
 <code>lib/python</code> subdirectories; invalid paths fail before the wrapper mutates
-Python import paths or loader paths. For explicit <code>path=...</code>, the wrapper also
+Python import paths. For explicit <code>path=...</code>, the wrapper also
 removes stale <code>pythonint</code> modules for the import attempt and verifies that the
 loaded <code>pythonint.__file__</code> is under that installation's <code>bin</code> or <code>lib/python</code>
 directory.</p>
@@ -437,5 +436,5 @@ export DYLD_LIBRARY_PATH=$IRISINSTALLDIR/bin:$DYLD_LIBRARY_PATH
 
 <!--
 MkDocs version : 1.6.1
-Build Date UTC : 2026-05-11 08:10:22.668374+00:00
+Build Date UTC : 2026-05-11 13:21:34.681624+00:00
 -->
