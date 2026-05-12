@@ -49,6 +49,12 @@ export IRISPASSWORD=SYS
 export IRISNAMESPACE=USER
 ```
 
+Warning: when embedded-local and the Native API wheel run in the same Python
+process, loader-path ordering matters. `pythonint` needs shared libraries from
+the IRIS `bin` directory, while the Native API wheel needs its bundled ELS SDK
+libraries first. See
+[Native API wheel and IRIS `bin` loader-path conflict](#native-api-wheel-and-iris-bin-loader-path-conflict).
+
 ### For windows
 
 For windows, you can set the environment variables as follows:
@@ -405,6 +411,52 @@ INFO:iris_utils._find_libpython:PythonRuntimeLibrary path set to /usr/local/Cell
 INFO:iris_utils._find_libpython:PythonPath set to /Other/.venv/lib/python3.11/site-packages
 INFO:iris_utils._find_libpython:PythonRuntimeLibraryVersion set to 3.11
 ```
+
+# Known Issues
+
+## Native API wheel and IRIS `bin` loader-path conflict
+
+If `intersystems-irispython` is installed in the same environment, be careful
+with `LD_LIBRARY_PATH` and `DYLD_LIBRARY_PATH`. The Native API wheel ships its
+own ELS SDK libraries, and an IRIS installation also contains libraries with
+the same names, such as `libelsdkcore.dylib` on macOS. If the IRIS `bin`
+directory appears first in the loader path, the Native API extension can bind
+to the IRIS installation library instead of the wheel's bundled,
+ABI-compatible library. This can fail while importing `iris.irissdk` with
+errors such as `Symbol not found` or `undefined symbol`.
+
+Embedded-local mode still needs the IRIS `bin` directory in the loader path
+because `pythonint` depends on shared libraries from the IRIS installation.
+The conflict is ordering: `pythonint` needs IRIS libraries visible, but the
+Native API wheel must resolve its ELS SDK libraries from the wheel before the
+dynamic loader searches the IRIS `bin` directory.
+
+When embedded-local and the Native API must run in the same Python process,
+put the wheel's bundled native library directory before the IRIS `bin`
+directory, and do it before Python starts:
+
+```bash
+export IRISINSTALLDIR=/opt/iris
+export IRIS_WHEEL_LIBS=$(python - <<'PY'
+from importlib import metadata
+from pathlib import Path
+
+iris_dir = Path(metadata.distribution("intersystems-irispython").locate_file("iris"))
+for name in (".dylibs", ".libs"):
+    candidate = iris_dir / name
+    if candidate.is_dir():
+        print(candidate)
+        break
+PY
+)
+export DYLD_LIBRARY_PATH=$IRIS_WHEEL_LIBS:$IRISINSTALLDIR/bin:$DYLD_LIBRARY_PATH
+# Linux: use LD_LIBRARY_PATH with the same ordering.
+```
+
+Changing these variables from inside Python cannot repair the current
+process. If a process only uses the Native API wheel and does not load
+embedded Python, do not point the loader path at an incompatible IRIS `bin`
+directory.
 
 # Troubleshooting
 
