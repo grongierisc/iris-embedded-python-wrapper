@@ -1,3 +1,4 @@
+from decimal import Decimal
 import iris_embedded_python as iris
 import _iris_ep
 import types
@@ -10,6 +11,28 @@ from tests.iris._dbapi_fakes import (
     FakeStatementNoColumnCount,
     FakeStatementNoColumnCountInfinite,
 )
+
+
+class FakeIRISStream:
+    def __init__(self, class_name, content):
+        self.class_name = class_name
+        self.content = content
+        self.rewound = False
+
+    def invoke(self, method_name, *args):
+        if method_name == "%ClassName":
+            return self.class_name
+        if method_name == "Rewind":
+            self.rewound = True
+            return None
+        if method_name == "Read":
+            return self.content
+        raise AttributeError(method_name)
+
+    def get(self, property_name):
+        if property_name == "Size":
+            return len(self.content)
+        raise AttributeError(property_name)
 
 
 def test_dbapi_embedded_execute_and_fetch(monkeypatch):
@@ -127,6 +150,32 @@ def test_dbapi_embedded_prepared_params_normalize_empty_string(monkeypatch):
     assert fake_statement.execute_args == ("\x00", "", "z")
 
 
+def test_dbapi_embedded_prepared_params_normalize_decimal(monkeypatch):
+    fake_statement = FakeStatement([(1, "a")])
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-kernel",
+            dbapi=None,
+        ),
+    )
+
+    conn = iris.dbapi.connect(mode="embedded")
+    cur = conn.cursor()
+
+    cur.execute("select * from Demo where amount=?", (Decimal("123.45"),))
+
+    assert fake_statement.execute_args == ("123.45",)
+
+
 def test_dbapi_embedded_prepared_dict_params_normalize_empty_string(monkeypatch):
     fake_statement = FakeStatement([(1, "a")])
 
@@ -151,6 +200,62 @@ def test_dbapi_embedded_prepared_dict_params_normalize_empty_string(monkeypatch)
     cur.execute("select * from Demo where a=:a and b=:b", {"a": "", "b": None})
 
     assert fake_statement.execute_kwargs == {"a": "\x00", "b": ""}
+
+
+def test_dbapi_embedded_prepared_dict_params_normalize_decimal(monkeypatch):
+    fake_statement = FakeStatement([(1, "a")])
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-kernel",
+            dbapi=None,
+        ),
+    )
+
+    conn = iris.dbapi.connect(mode="embedded")
+    cur = conn.cursor()
+
+    cur.execute("select * from Demo where amount=:amount", {"amount": Decimal("9.50")})
+
+    assert fake_statement.execute_kwargs == {"amount": "9.50"}
+
+
+def test_dbapi_embedded_fetches_stream_values(monkeypatch):
+    character_stream = FakeIRISStream("%Stream.GlobalCharacter", "long text")
+    binary_stream = FakeIRISStream("%Stream.GlobalBinary", "\x00\xff")
+    fake_statement = FakeStatement([(character_stream, binary_stream)])
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-kernel",
+            dbapi=None,
+        ),
+    )
+
+    conn = iris.dbapi.connect(mode="embedded")
+    cur = conn.cursor()
+
+    cur.execute("select long_text, long_bin from Demo")
+
+    assert cur.fetchone() == ("long text", b"\x00\xff")
+    assert character_stream.rewound
+    assert binary_stream.rewound
 
 
 def test_dbapi_embedded_prefers_sql_statement(monkeypatch):
@@ -310,4 +415,3 @@ def test_dbapi_embedded_mode_accepts_embedded_local(monkeypatch):
 
     assert fake_statement.prepare_seen == "select 1"
     assert cur.fetchone() == (11, "local")
-

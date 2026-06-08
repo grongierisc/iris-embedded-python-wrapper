@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from contextlib import contextmanager
+from decimal import Decimal
 from enum import Enum
 from typing import Any, Callable, Optional
 
@@ -21,16 +22,118 @@ _VALID_ISOLATION_LEVELS = frozenset({
 _DEFAULT_ISOLATION_LEVEL = "READ COMMITTED"
 
 _SQL_EMPTY_STRING_SENTINEL = "\x00"
+_IRIS_STREAM_CLASS_NAMES = frozenset(
+    {
+        "%Stream.GlobalBinary",
+        "%Stream.GlobalCharacter",
+        "%Stream.FileBinary",
+        "%Stream.FileCharacter",
+    }
+)
+_NOT_IRIS_STREAM = object()
+
+
+def _safe_getattr(value: Any, name: str, default: Any = None):
+    try:
+        return getattr(value, name)
+    except Exception:
+        return default
+
+
+def _invoke_iris_method(value: Any, method_name: str, *args: Any):
+    invoke = _safe_getattr(value, "invoke")
+    if callable(invoke):
+        try:
+            return invoke(method_name, *args)
+        except Exception:
+            pass
+
+    candidates = [method_name]
+    if method_name.startswith("%"):
+        candidates.append(f"_{method_name[1:]}")
+
+    for candidate in candidates:
+        method = _safe_getattr(value, candidate)
+        if callable(method):
+            return method(*args)
+
+    raise AttributeError(method_name)
+
+
+def _get_iris_property(value: Any, property_name: str):
+    getter = _safe_getattr(value, "get")
+    if callable(getter):
+        try:
+            return getter(property_name)
+        except Exception:
+            pass
+
+    return getattr(value, property_name)
+
+
+def _get_iris_class_name(value: Any) -> Optional[str]:
+    for attr_name in ("_iris_classname", "iris_classname"):
+        class_name = _safe_getattr(value, attr_name)
+        if class_name:
+            return str(class_name)
+
+    for args in ((1,), ()):
+        try:
+            class_name = _invoke_iris_method(value, "%ClassName", *args)
+        except Exception:
+            continue
+        if class_name:
+            return str(class_name)
+
+    return None
+
+
+def _read_iris_stream(value: Any):
+    class_name = _get_iris_class_name(value)
+    if class_name not in _IRIS_STREAM_CLASS_NAMES:
+        return _NOT_IRIS_STREAM
+
+    try:
+        _invoke_iris_method(value, "Rewind")
+    except Exception:
+        pass
+
+    try:
+        size = _get_iris_property(value, "Size")
+    except Exception:
+        size = None
+
+    if size in (None, "", 0):
+        return b"" if "Binary" in class_name else ""
+
+    content = _invoke_iris_method(value, "Read", int(size))
+    if "Binary" in class_name and isinstance(content, str):
+        return content.encode("latin-1")
+    if "Binary" in class_name and isinstance(content, bytearray):
+        return bytes(content)
+    return content
 
 
 def _normalize_embedded_result_value(value: Any):
     # Embedded %SQL.Statement crosses the SQL/ObjectScript boundary, where
     # SQL NULL becomes the ObjectScript null string ("") and SQL empty string
     # becomes $CHAR(0). Normalize back to Python-facing values here.
-    if value == "":
-        return None
-    if value == _SQL_EMPTY_STRING_SENTINEL:
-        return ""
+    if isinstance(value, str):
+        if value == "":
+            return None
+        if value == _SQL_EMPTY_STRING_SENTINEL:
+            return ""
+        return value
+
+    if value is None or isinstance(
+        value, (bool, int, float, Decimal, bytes, bytearray, memoryview)
+    ):
+        return value
+
+    stream_value = _read_iris_stream(value)
+    if stream_value is not _NOT_IRIS_STREAM:
+        return stream_value
+
     return value
 
 
@@ -49,6 +152,8 @@ def _normalize_embedded_param_value(value: Any):
         return int(value)
     if isinstance(value, Enum):
         return _normalize_embedded_param_value(value.value)
+    if isinstance(value, Decimal):
+        return str(value)
     # In the embedded SQL/ObjectScript boundary, Python empty string should be
     # sent as the SQL empty-string sentinel so it round-trips distinctly from NULL.
     if value == "":
@@ -66,7 +171,9 @@ def _embedded_param_needs_normalization(value: Any) -> bool:
         return value == ""
     if value_type in (int, float, bytes):
         return False
-    return isinstance(value, Enum) or value == ""
+    if isinstance(value, (Decimal, Enum)):
+        return True
+    return value == ""
 
 
 def _normalize_embedded_params(params: Any):
