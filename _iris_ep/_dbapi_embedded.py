@@ -225,6 +225,21 @@ def _raise_for_statement_error(result: Any):
     raise DatabaseError(f"SQLCODE {sqlcode}: {message}" if message else f"SQLCODE {sqlcode}")
 
 
+def _get_result_rowcount(result: Any) -> Optional[int]:
+    for attr_name in ("_ROWCOUNT", "%ROWCOUNT", "ROWCOUNT", "rowcount"):
+        try:
+            value = getattr(result, attr_name)
+        except Exception:
+            continue
+
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+
+    return None
+
+
 def _get_result_column_count(result: Any) -> Optional[int]:
     try:
         column_count = int(getattr(result, "_ResultColumnCount") or 0)
@@ -674,7 +689,8 @@ class _EmbeddedCursor:
             self._returns_rows_cache[operation] = returns_rows
         if not returns_rows:
             self.description = None
-            self.rowcount = -1
+            rowcount = _get_result_rowcount(result)
+            self.rowcount = rowcount if rowcount is not None else -1
             self._result_iter = None
             return self
 
@@ -752,10 +768,17 @@ class _EmbeddedCursor:
             self._needs_transaction_cache[operation] = needs_transaction
         if needs_transaction and not self.connection._transaction_active:
             self.connection._ensure_transaction()
+        total_rowcount = 0
+        rowcount_known = True
         for params in seq_of_parameters:
-            self._execute_with_statement(operation, params)
+            result = self._execute_with_statement(operation, params)
+            rowcount = _get_result_rowcount(result)
+            if rowcount is None:
+                rowcount_known = False
+            elif rowcount_known:
+                total_rowcount += rowcount
         self.description = None
-        self.rowcount = -1
+        self.rowcount = total_rowcount if rowcount_known else -1
         return self
 
     @staticmethod

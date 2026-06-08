@@ -35,6 +35,23 @@ class FakeIRISStream:
         raise AttributeError(property_name)
 
 
+class FakeStatementResultWithRowcount:
+    def __init__(self, rowcount):
+        self._ROWCOUNT = rowcount
+
+
+class FakeStatementWithRowcount(FakeStatement):
+    def __init__(self, rowcounts):
+        super().__init__([])
+        self.rowcounts = list(rowcounts)
+
+    def _Execute(self, *args, **kwargs):
+        self.execute_args = args
+        self.execute_kwargs = kwargs
+        rowcount = self.rowcounts.pop(0)
+        return FakeStatementResultWithRowcount(rowcount)
+
+
 def test_dbapi_embedded_execute_and_fetch(monkeypatch):
     fake_statement = FakeStatement([(10, "x"), (20, "y")])
 
@@ -226,6 +243,60 @@ def test_dbapi_embedded_prepared_dict_params_normalize_decimal(monkeypatch):
     cur.execute("select * from Demo where amount=:amount", {"amount": Decimal("9.50")})
 
     assert fake_statement.execute_kwargs == {"amount": "9.50"}
+
+
+def test_dbapi_embedded_insert_sets_rowcount(monkeypatch):
+    fake_statement = FakeStatementWithRowcount([1])
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-kernel",
+            dbapi=None,
+        ),
+    )
+
+    conn = iris.dbapi.connect(mode="embedded")
+    cur = conn.cursor()
+
+    cur.execute("insert into Demo (name) values (?)", ("x",))
+
+    assert cur.description is None
+    assert cur.rowcount == 1
+
+
+def test_dbapi_embedded_executemany_sums_rowcount(monkeypatch):
+    fake_statement = FakeStatementWithRowcount([1, 1, 1])
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-kernel",
+            dbapi=None,
+        ),
+    )
+
+    conn = iris.dbapi.connect(mode="embedded")
+    cur = conn.cursor()
+
+    cur.executemany("insert into Demo (name) values (?)", [("a",), ("b",), ("c",)])
+
+    assert cur.description is None
+    assert cur.rowcount == 3
 
 
 def test_dbapi_embedded_fetches_stream_values(monkeypatch):
