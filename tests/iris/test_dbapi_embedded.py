@@ -49,8 +49,10 @@ class FakeStreamGlobal:
 
 
 class FakeStatementResultWithRowcount:
-    def __init__(self, rowcount):
+    def __init__(self, rowcount, rowid=None):
         self._ROWCOUNT = rowcount
+        if rowid is not None:
+            self._ROWID = rowid
 
 
 class FakeStatementResultWithSqlError:
@@ -60,15 +62,17 @@ class FakeStatementResultWithSqlError:
 
 
 class FakeStatementWithRowcount(FakeStatement):
-    def __init__(self, rowcounts):
+    def __init__(self, rowcounts, rowids=None):
         super().__init__([])
         self.rowcounts = list(rowcounts)
+        self.rowids = list(rowids) if rowids is not None else []
 
     def _Execute(self, *args, **kwargs):
         self.execute_args = args
         self.execute_kwargs = kwargs
         rowcount = self.rowcounts.pop(0)
-        return FakeStatementResultWithRowcount(rowcount)
+        rowid = self.rowids.pop(0) if self.rowids else None
+        return FakeStatementResultWithRowcount(rowcount, rowid=rowid)
 
 
 class FakeStatementWithSqlError(FakeStatement):
@@ -597,7 +601,7 @@ def test_dbapi_embedded_other_sql_errors_remain_database_error():
 
 
 def test_dbapi_embedded_insert_sets_rowcount(monkeypatch):
-    fake_statement = FakeStatementWithRowcount([1])
+    fake_statement = FakeStatementWithRowcount([1], rowids=[42])
 
     def fake_cls(name):
         assert name == "%SQL.Statement"
@@ -617,14 +621,45 @@ def test_dbapi_embedded_insert_sets_rowcount(monkeypatch):
     conn = iris.dbapi.connect(mode="embedded")
     cur = conn.cursor()
 
+    assert cur.lastrowid is None
+
     cur.execute("insert into Demo (name) values (?)", ("x",))
 
     assert cur.description is None
     assert cur.rowcount == 1
+    assert cur.lastrowid == 42
+
+
+def test_dbapi_embedded_non_insert_does_not_set_lastrowid(monkeypatch):
+    fake_statement = FakeStatementWithRowcount([1], rowids=[42])
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-kernel",
+            dbapi=None,
+        ),
+    )
+
+    conn = iris.dbapi.connect(mode="embedded")
+    cur = conn.cursor()
+
+    cur.execute("update Demo set name = ? where id = ?", ("x", 1))
+
+    assert cur.description is None
+    assert cur.rowcount == 1
+    assert cur.lastrowid is None
 
 
 def test_dbapi_embedded_executemany_sums_rowcount(monkeypatch):
-    fake_statement = FakeStatementWithRowcount([1, 1, 1])
+    fake_statement = FakeStatementWithRowcount([1, 1, 1], rowids=[1, 2, 3])
 
     def fake_cls(name):
         assert name == "%SQL.Statement"
@@ -648,6 +683,7 @@ def test_dbapi_embedded_executemany_sums_rowcount(monkeypatch):
 
     assert cur.description is None
     assert cur.rowcount == 3
+    assert cur.lastrowid is None
 
 
 def test_dbapi_embedded_fetches_stream_values(monkeypatch):

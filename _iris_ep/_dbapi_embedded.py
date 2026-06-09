@@ -459,6 +459,24 @@ def _get_result_rowcount(result: Any) -> Optional[int]:
     return None
 
 
+def _get_result_lastrowid(result: Any) -> Optional[int]:
+    for attr_name in ("_ROWID", "%ROWID", "ROWID", "rowid"):
+        try:
+            value = getattr(result, attr_name)
+        except Exception:
+            continue
+
+        if value in (None, ""):
+            continue
+
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+
+    return None
+
+
 def _get_result_column_count(result: Any) -> Optional[int]:
     try:
         column_count = int(getattr(result, "_ResultColumnCount") or 0)
@@ -1045,6 +1063,7 @@ class _EmbeddedCursor:
         self.arraysize = 1
         self.description = None
         self.rowcount = -1
+        self.lastrowid = None
         self._result_iter = None
         self._closed = False
         # Caches keyed by SQL string — avoids _New()/_Prepare(), projection parsing,
@@ -1094,6 +1113,7 @@ class _EmbeddedCursor:
         # Deferring GC of the old %SQL.StatementResult until AFTER _Execute()
         # can corrupt the new result (IRIS %OnClose side-effects on shared state).
         self._result_iter = None
+        self.lastrowid = None
         try:
             if self.connection._namespace is None:
                 return self._execute_current_namespace(operation, params)
@@ -1122,6 +1142,8 @@ class _EmbeddedCursor:
             self.description = None
             rowcount = _get_result_rowcount(result)
             self.rowcount = rowcount if rowcount is not None else -1
+            if operation.lstrip().upper().startswith("INSERT"):
+                self.lastrowid = _get_result_lastrowid(result)
             self._result_iter = None
             return self
 
@@ -1193,6 +1215,7 @@ class _EmbeddedCursor:
         if self.connection._closed:
             raise InterfaceError("Connection is closed")
         self._result_iter = None
+        self.lastrowid = None
         try:
             if self.connection._namespace is None:
                 return self._executemany_current_namespace(operation, seq_of_parameters)
