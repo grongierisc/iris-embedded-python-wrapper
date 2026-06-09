@@ -11,6 +11,7 @@ from ._byref import ByRef, make_ref
 from ._dbapi_exceptions import (
     DatabaseError,
     Error,
+    IntegrityError,
     InterfaceError,
     OperationalError,
 )
@@ -35,6 +36,15 @@ _IRIS_STREAM_CLASS_NAMES = frozenset(
     }
 )
 _NOT_IRIS_STREAM = object()
+_INTEGRITY_SQLCODES = frozenset({
+    -119,  # Failed unique check.
+})
+_INTEGRITY_MESSAGE_MARKERS = (
+    "failed unique check",
+    "foreign key",
+    "not null",
+    "constraint",
+)
 
 
 def _safe_getattr(value: Any, name: str, default: Any = None):
@@ -422,7 +432,16 @@ def _raise_for_statement_error(result: Any):
     except Exception:
         message = ""
 
-    raise DatabaseError(f"SQLCODE {sqlcode}: {message}" if message else f"SQLCODE {sqlcode}")
+    message_text = str(message or "")
+    exception_cls = DatabaseError
+    if sqlcode in _INTEGRITY_SQLCODES or any(
+        marker in message_text.lower() for marker in _INTEGRITY_MESSAGE_MARKERS
+    ):
+        exception_cls = IntegrityError
+
+    raise exception_cls(
+        f"SQLCODE {sqlcode}: {message_text}" if message_text else f"SQLCODE {sqlcode}"
+    )
 
 
 def _get_result_rowcount(result: Any) -> Optional[int]:

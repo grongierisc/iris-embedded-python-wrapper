@@ -53,6 +53,12 @@ class FakeStatementResultWithRowcount:
         self._ROWCOUNT = rowcount
 
 
+class FakeStatementResultWithSqlError:
+    def __init__(self, sqlcode, message):
+        self._SQLCODE = sqlcode
+        self._Message = message
+
+
 class FakeStatementWithRowcount(FakeStatement):
     def __init__(self, rowcounts):
         super().__init__([])
@@ -63,6 +69,18 @@ class FakeStatementWithRowcount(FakeStatement):
         self.execute_kwargs = kwargs
         rowcount = self.rowcounts.pop(0)
         return FakeStatementResultWithRowcount(rowcount)
+
+
+class FakeStatementWithSqlError(FakeStatement):
+    def __init__(self, sqlcode, message):
+        super().__init__([])
+        self.sqlcode = sqlcode
+        self.message = message
+
+    def _Execute(self, *args, **kwargs):
+        self.execute_args = args
+        self.execute_kwargs = kwargs
+        return FakeStatementResultWithSqlError(self.sqlcode, self.message)
 
 
 class FakeMetadataColumn:
@@ -524,6 +542,53 @@ def test_dbapi_embedded_prepared_dict_params_missing_name(monkeypatch):
 
     with pytest.raises(iris.dbapi.InterfaceError, match="Missing named SQL parameter"):
         cur.execute("select :missing", {"other": 1})
+
+
+def test_dbapi_embedded_unique_constraint_maps_to_integrity_error():
+    result = FakeStatementResultWithSqlError(
+        -119,
+        "Table 'Demo.T', Constraint 'TPKey', Field(s) id=1; failed unique check",
+    )
+
+    with pytest.raises(iris.dbapi.IntegrityError, match="failed unique check"):
+        embedded_dbapi._raise_for_statement_error(result)
+
+
+def test_dbapi_embedded_preserves_integrity_error_from_execute(monkeypatch):
+    fake_statement = FakeStatementWithSqlError(
+        -119,
+        "Table 'Demo.T', Constraint 'TPKey', Field(s) id=1; failed unique check",
+    )
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-kernel",
+            dbapi=None,
+        ),
+    )
+
+    conn = iris.dbapi.connect(mode="embedded")
+    cur = conn.cursor()
+
+    with pytest.raises(iris.dbapi.IntegrityError, match="failed unique check"):
+        cur.execute("insert into Demo.T (id) values (?)", (1,))
+
+
+def test_dbapi_embedded_other_sql_errors_remain_database_error():
+    result = FakeStatementResultWithSqlError(-400, "General SQL error")
+
+    with pytest.raises(iris.dbapi.DatabaseError) as exc_info:
+        embedded_dbapi._raise_for_statement_error(result)
+
+    assert not isinstance(exc_info.value, iris.dbapi.IntegrityError)
 
 
 def test_dbapi_embedded_insert_sets_rowcount(monkeypatch):
