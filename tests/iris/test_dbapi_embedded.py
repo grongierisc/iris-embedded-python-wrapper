@@ -92,12 +92,17 @@ class FakeMetadataColumn:
         sql_category=None,
         is_expression=0,
         precision=10,
+        scale="",
+        odbc_type=None,
     ):
         self.label = label
         self.colName = label
         self.clientType = client_type
         self.isExpression = is_expression
         self.precision = precision
+        self.scale = scale
+        if odbc_type is not None:
+            self.ODBCType = odbc_type
         self.property = types.SimpleNamespace(RuntimeType=runtime_type, Type=runtime_type)
         self.typeClass = types.SimpleNamespace(Name=runtime_type, SqlCategory=sql_category)
 
@@ -701,6 +706,73 @@ def test_dbapi_embedded_fetches_packed_stream_reference_strings(monkeypatch):
 
     assert embedded_dbapi._normalize_embedded_result_value(character_ref) == "long text"
     assert embedded_dbapi._normalize_embedded_result_value(binary_ref) == b"\x00\xffabc"
+
+
+def test_dbapi_embedded_fetches_numeric_values_as_decimal(monkeypatch):
+    fake_statement = FakeVectorStatement(
+        [(123.45, "9.50", 1.25, 7.125)],
+        [
+            FakeMetadataColumn(
+                "amount",
+                client_type=14,
+                runtime_type="%Library.Numeric",
+                sql_category="NUMERIC",
+                scale="4",
+                odbc_type=2,
+            ),
+            FakeMetadataColumn(
+                "numeric_amount",
+                client_type=14,
+                runtime_type="%Library.Numeric",
+                sql_category="NUMERIC",
+                scale="2",
+                odbc_type=2,
+            ),
+            FakeMetadataColumn(
+                "double_amount",
+                client_type=3,
+                runtime_type="%Library.Double",
+                sql_category="DOUBLE",
+                odbc_type=8,
+            ),
+            FakeMetadataColumn(
+                "decimal_expr",
+                client_type=14,
+                runtime_type="%Library.Numeric",
+                sql_category="NUMERIC",
+                is_expression=1,
+                scale="3",
+                odbc_type=2,
+            ),
+        ],
+    )
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-kernel",
+            dbapi=None,
+        ),
+    )
+
+    conn = iris.dbapi.connect(mode="embedded")
+    cur = conn.cursor()
+
+    cur.execute("select amount, numeric_amount, double_amount, decimal_expr from Demo")
+
+    assert cur.fetchone() == (
+        Decimal("123.4500"),
+        Decimal("9.50"),
+        1.25,
+        Decimal("7.125"),
+    )
 
 
 def test_dbapi_embedded_fetches_vector_values_with_getrow(monkeypatch):

@@ -538,6 +538,26 @@ def _integer_result_processor(value: Any):
     return value
 
 
+def _coerce_decimal_result(value: Any, scale: Optional[int] = None):
+    if value is None or isinstance(value, Decimal):
+        decimal_value = value
+    elif value == "":
+        return None
+    elif value == _SQL_EMPTY_STRING_SENTINEL:
+        return ""
+    else:
+        decimal_value = Decimal(str(value))
+
+    if decimal_value is not None and scale is not None and scale >= 0:
+        decimal_value = decimal_value.quantize(Decimal(1).scaleb(-scale))
+    return decimal_value
+
+
+def _decimal_result_processor(value: Any, scale: Optional[int] = None):
+    value = _normalize_embedded_result_value(value)
+    return _coerce_decimal_result(value, scale)
+
+
 def _vector_result_processor(value: Any):
     return _normalize_embedded_result_value(value)
 
@@ -586,6 +606,56 @@ def _is_list_metadata_column(column: Any) -> bool:
             pass
 
     return False
+
+
+def _is_decimal_metadata_column(column: Any) -> bool:
+    for attr_name in ("property", "typeClass"):
+        try:
+            metadata_object = getattr(column, attr_name)
+        except Exception:
+            continue
+
+        for type_attr in ("RuntimeType", "Type", "Name"):
+            try:
+                if getattr(metadata_object, type_attr) in (
+                    "%Library.Numeric",
+                    "%Numeric",
+                    "%Library.Decimal",
+                    "%Decimal",
+                ):
+                    return True
+            except Exception:
+                pass
+
+        try:
+            if getattr(metadata_object, "SqlCategory") == "NUMERIC":
+                return True
+        except Exception:
+            pass
+
+    try:
+        if int(getattr(column, "ODBCType")) in (2, 3):
+            return True
+    except Exception:
+        pass
+
+    try:
+        return int(getattr(column, "clientType")) == 14
+    except Exception:
+        return False
+
+
+def _get_decimal_column_scale(column: Any) -> Optional[int]:
+    try:
+        scale = getattr(column, "scale")
+    except Exception:
+        return None
+    if scale in (None, ""):
+        return None
+    try:
+        return int(scale)
+    except Exception:
+        return None
 
 
 def _is_potential_vector_expression_column(column: Any) -> bool:
@@ -649,6 +719,11 @@ def _get_result_processors(
             processors.append(_vector_result_processor)
         elif column is not None and _is_list_metadata_column(column):
             processors.append(_list_result_processor)
+        elif column is not None and _is_decimal_metadata_column(column):
+            scale = _get_decimal_column_scale(column)
+            processors.append(
+                lambda value, scale=scale: _decimal_result_processor(value, scale)
+            )
         elif client_type == 1:
             processors.append(_binary_result_processor)
         elif client_type in (5, 16, 18):
