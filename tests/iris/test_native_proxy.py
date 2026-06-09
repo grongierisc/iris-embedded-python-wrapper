@@ -140,6 +140,7 @@ class MockIRISHandleLikeConnection:
     def set(self, oref, prop_name, value):
         self.set_props.append((prop_name, value))
 
+
 def test_native_api_proxy_cls():
     db = MockIRISNativeConnection()
     
@@ -210,6 +211,22 @@ def test_native_proxy_class_method_supports_byref():
     assert args[1].get_type() is int
 
 
+def test_native_proxy_class_method_supports_public_ref():
+    db = MockIRISNativeConnection()
+
+    iris.runtime.configure(mode="native", iris=db)
+
+    try:
+        ref = iris.ref(0)
+        result = iris.cls("User.Bar").Foo("input", ref)
+    finally:
+        iris.runtime.reset()
+
+    assert result == 1
+    assert isinstance(ref, iris.ByRef)
+    assert ref.value == 42
+
+
 def test_native_proxy_instance_method_supports_byref():
     db = MockIRISNativeConnection()
     ref = iris.ByRef(0, int)
@@ -246,6 +263,22 @@ def test_native_proxy_converts_vector_method_args():
 
     assert db.invoked_methods[-3] == ("User.Bar", "VectorArg", ("1,2,3",))
     assert db.invoked_methods[-1] == ("Instance", "VectorArg", ("1,2,3",))
+
+
+def test_vector_operations_do_not_use_native_runtime_bridge():
+    db = MockIRISNativeConnection()
+
+    iris.runtime.configure(mode="native", iris=db)
+
+    try:
+        with pytest.raises(RuntimeError, match="embedded runtime"):
+            iris.Vector([1, 2, 3], dtype="float").sum()
+        with pytest.raises(RuntimeError, match="embedded runtime"):
+            iris.gref("^CacheTemp")
+        with pytest.raises(RuntimeError, match="embedded runtime"):
+            iris.execute("set x=1")
+    finally:
+        iris.runtime.reset()
 
 
 def test_runtime_configure_accepts_native_connection_and_converts(monkeypatch):

@@ -418,8 +418,9 @@ For the native object proxy path (`iris.cls(...)` with `iris.runtime` configured
 ##### ByRef
 
 `iris.ByRef(value)` is a lightweight by-reference container with a mutable
-`.value` attribute. `iris.make_ref(value)` returns `iris.ref` when the
-embedded runtime exposes it and falls back to `ByRef` otherwise.
+`.value` attribute. `iris.ref(value)` and `iris.make_ref(value)` use the
+embedded runtime reference type when available and otherwise return a
+`ByRef`-compatible container.
 
 For ObjectScript methods that declare a `ByRef` argument:
 
@@ -478,7 +479,34 @@ with SQL `TO_VECTOR(?, decimal)`, `TO_VECTOR(?, double)`, or
 storage; embedded `$VECTOROP` operations evaluate that value as an
 ObjectScript double because `$VECTOR` has no float storage type. Vector
 operations delegate to embedded ObjectScript `$VECTOROP`, so they require an
-embedded runtime with `iris.gref` and `iris.execute` available.
+embedded runtime with `iris.gref` and `iris.execute` available. They are not
+routed through the remote/native bridge.
+
+FastEmbed is an optional dependency (`pip install fastembed`). It returns NumPy
+embedding arrays, which can be passed directly to `iris.Vector`:
+
+```python
+from fastembed import TextEmbedding
+import iris
+
+model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+embedding = iris.Vector(next(model.embed(["store this text"])), dtype="float")
+
+cur.execute(
+	"INSERT INTO Demo.Documents (content, embedding) VALUES (?, TO_VECTOR(?, float))",
+	("store this text", embedding),
+)
+```
+
+Complete runnable examples:
+
+- [`examples/fastembed_vector_search.py`](examples/fastembed_vector_search.py)
+  stores embeddings in an IRIS SQL `VECTOR` column and ranks with
+  `VECTOR_COSINE`.
+- [`examples/fastembed_vector_operations.py`](examples/fastembed_vector_operations.py)
+  keeps the embeddings as Python `iris.Vector` objects and ranks with
+  `Vector.cosine()` without SQL. It requires embedded `iris.gref` and
+  `iris.execute`.
 
 #### Connect modes
 

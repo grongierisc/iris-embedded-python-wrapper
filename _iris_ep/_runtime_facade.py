@@ -9,6 +9,7 @@ from iris_utils import NativeClassProxy, runtime as _runtime_manager
 from iris_utils._module_exports import copy_public_exports
 
 from . import _bootstrap
+from ._byref import ByRef
 from ._dbapi import make_dbapi
 
 _WRAPPER_EXPORTS = {
@@ -17,6 +18,9 @@ _WRAPPER_EXPORTS = {
     "dbapi",
     "cls",
     "connect",
+    "execute",
+    "gref",
+    "ref",
     "ByRef",
     "make_ref",
     "IRISVector",
@@ -287,8 +291,20 @@ class RuntimeFacade:
         def public_connect(*args, path=None, **kwargs):
             return self.connect(*args, path=path, **kwargs)
 
+        def public_execute(statements):
+            return self.execute(statements)
+
+        def public_gref(global_name):
+            return self.gref(global_name)
+
+        def public_ref(value=""):
+            return self.ref(value)
+
         public_cls.__name__ = "cls"
         public_connect.__name__ = "connect"
+        public_execute.__name__ = "execute"
+        public_gref.__name__ = "gref"
+        public_ref.__name__ = "ref"
         self._public_cls = public_cls
         self._public_connect = public_connect
 
@@ -297,6 +313,9 @@ class RuntimeFacade:
         self.module_globals["dbapi"] = self.dbapi
         self.module_globals["cls"] = public_cls
         self.module_globals["connect"] = public_connect
+        self.module_globals["execute"] = public_execute
+        self.module_globals["gref"] = public_gref
+        self.module_globals["ref"] = public_ref
 
     def finalize_all(self) -> None:
         existing_all = self.module_globals.get("__all__")
@@ -313,6 +332,9 @@ class RuntimeFacade:
             "dbapi",
             "cls",
             "connect",
+            "execute",
+            "gref",
+            "ref",
             "ByRef",
             "make_ref",
             "IRISVector",
@@ -378,6 +400,9 @@ class RuntimeFacade:
                 "cls",
                 "connect",
                 "system",
+                "execute",
+                "gref",
+                "ref",
                 "ByRef",
                 "make_ref",
                 "IRISVector",
@@ -453,6 +478,82 @@ class RuntimeFacade:
         if callable(cls_candidate) and cls_candidate is not self._public_cls:
             return cls_candidate
         return None
+
+    def _get_embedded_module_attr(self, current_runtime, name, *, required=False):
+        current_runtime = self.ensure_embedded_backend(
+            current_runtime,
+            required=required,
+        )
+        module = getattr(current_runtime, "embedded_module", None)
+        if module is not None:
+            attr = getattr(module, name, None)
+            if callable(attr):
+                return attr
+        return None
+
+    def execute(self, statements):
+        current_runtime = self.runtime_manager.get()
+        if current_runtime.mode == "native":
+            if current_runtime.iris is None:
+                raise RuntimeError("iris.runtime is configured for native mode, but no native IRIS handle is bound")
+            raise RuntimeError("iris.execute requires an embedded runtime")
+
+        if current_runtime.mode == "embedded":
+            embedded_execute = self._get_embedded_module_attr(
+                current_runtime,
+                "execute",
+                required=True,
+            )
+            if callable(embedded_execute):
+                return embedded_execute(statements)
+            raise RuntimeError("iris.runtime is configured for embedded mode, but embedded execute is unavailable")
+
+        if current_runtime.embedded_available:
+            embedded_execute = self._get_embedded_module_attr(current_runtime, "execute")
+            if callable(embedded_execute):
+                return embedded_execute(statements)
+
+        raise RuntimeError("iris.execute requires an embedded runtime")
+
+    def gref(self, global_name):
+        current_runtime = self.runtime_manager.get()
+        if current_runtime.mode == "native":
+            if current_runtime.iris is None:
+                raise RuntimeError("iris.runtime is configured for native mode, but no native IRIS handle is bound")
+            raise RuntimeError("iris.gref requires an embedded runtime")
+
+        if current_runtime.mode == "embedded":
+            embedded_gref = self._get_embedded_module_attr(
+                current_runtime,
+                "gref",
+                required=True,
+            )
+            if callable(embedded_gref):
+                return embedded_gref(global_name)
+            raise RuntimeError("iris.runtime is configured for embedded mode, but embedded gref is unavailable")
+
+        if current_runtime.embedded_available:
+            embedded_gref = self._get_embedded_module_attr(current_runtime, "gref")
+            if callable(embedded_gref):
+                return embedded_gref(global_name)
+
+        raise RuntimeError("iris.gref requires an embedded runtime")
+
+    def ref(self, value=""):
+        current_runtime = self.runtime_manager.get()
+        if current_runtime.mode == "embedded" or (
+            current_runtime.mode == "auto" and current_runtime.embedded_available
+        ):
+            embedded_ref = self._get_embedded_module_attr(
+                current_runtime,
+                "ref",
+                required=current_runtime.mode == "embedded",
+            )
+            if callable(embedded_ref):
+                return embedded_ref(value)
+            if current_runtime.mode == "embedded":
+                raise RuntimeError("iris.runtime is configured for embedded mode, but embedded ref is unavailable")
+        return ByRef(value)
 
     def cls(self, class_name):
         current_runtime = self.runtime_manager.get()

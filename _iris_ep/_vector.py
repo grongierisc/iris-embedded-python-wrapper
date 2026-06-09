@@ -95,7 +95,7 @@ def _coerce_iris_vector_operand(value: Any, dtype: str) -> "IRISVector":
 
 
 class IRISVector:
-    """Python value wrapper for IRIS SQL VECTOR parameters and operations."""
+    """Python value wrapper for IRIS SQL VECTOR parameters and embedded operations."""
 
     __slots__ = ("_objectscript_dtype", "_values", "dtype")
 
