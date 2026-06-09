@@ -1,4 +1,5 @@
 from decimal import Decimal
+import pytest
 import iris as public_iris
 import iris_embedded_python as iris
 import _iris_ep
@@ -37,6 +38,14 @@ class FakeIRISStream:
         if property_name == "Size":
             return len(self.content)
         raise AttributeError(property_name)
+
+
+class FakeStreamGlobal:
+    def __init__(self, values):
+        self.values = values
+
+    def get(self, key):
+        return self.values.get(tuple(str(part) for part in key))
 
 
 class FakeStatementResultWithRowcount:
@@ -426,7 +435,9 @@ def test_dbapi_embedded_prepared_dict_params_normalize_empty_string(monkeypatch)
 
     cur.execute("select * from Demo where a=:a and b=:b", {"a": "", "b": None})
 
-    assert fake_statement.execute_kwargs == {"a": "\x00", "b": ""}
+    assert fake_statement.prepare_seen == "select * from Demo where a=? and b=?"
+    assert fake_statement.execute_args == ("\x00", "")
+    assert fake_statement.execute_kwargs == {}
 
 
 def test_dbapi_embedded_prepared_dict_params_normalize_decimal(monkeypatch):
@@ -452,7 +463,67 @@ def test_dbapi_embedded_prepared_dict_params_normalize_decimal(monkeypatch):
 
     cur.execute("select * from Demo where amount=:amount", {"amount": Decimal("9.50")})
 
-    assert fake_statement.execute_kwargs == {"amount": "9.50"}
+    assert fake_statement.prepare_seen == "select * from Demo where amount=?"
+    assert fake_statement.execute_args == ("9.50",)
+    assert fake_statement.execute_kwargs == {}
+
+
+def test_dbapi_embedded_prepared_dict_params_rewrite_repeated_names(monkeypatch):
+    fake_statement = FakeStatement([(1, "a")])
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-kernel",
+            dbapi=None,
+        ),
+    )
+
+    conn = iris.dbapi.connect(mode="embedded")
+    cur = conn.cursor()
+
+    cur.execute(
+        "select ':ignored' as literal, :x + :y as total, :x as again",
+        {"x": 2, "y": 3},
+    )
+
+    assert fake_statement.prepare_seen == (
+        "select ':ignored' as literal, ? + ? as total, ? as again"
+    )
+    assert fake_statement.execute_args == (2, 3, 2)
+    assert fake_statement.execute_kwargs == {}
+
+
+def test_dbapi_embedded_prepared_dict_params_missing_name(monkeypatch):
+    fake_statement = FakeStatement([(1, "a")])
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-kernel",
+            dbapi=None,
+        ),
+    )
+
+    conn = iris.dbapi.connect(mode="embedded")
+    cur = conn.cursor()
+
+    with pytest.raises(iris.dbapi.InterfaceError, match="Missing named SQL parameter"):
+        cur.execute("select :missing", {"other": 1})
 
 
 def test_dbapi_embedded_insert_sets_rowcount(monkeypatch):
@@ -537,6 +608,34 @@ def test_dbapi_embedded_fetches_stream_values(monkeypatch):
     assert cur.fetchone() == ("long text", b"\x00\xff")
     assert character_stream.rewound
     assert binary_stream.rewound
+
+
+def test_dbapi_embedded_fetches_packed_stream_reference_strings(monkeypatch):
+    character_ref = public_iris.IRISList([
+        "1",
+        "%Stream.GlobalCharacter",
+        "^FAKE.STREAM",
+    ]).to_param().decode("latin-1")
+    binary_ref = public_iris.IRISList([
+        "2",
+        "%Stream.GlobalBinary",
+        "^FAKE.STREAM",
+    ]).to_param().decode("latin-1")
+    fake_global = FakeStreamGlobal(
+        {
+            ("1",): "2,10",
+            ("1", "1"): "long ",
+            ("1", "2"): "text",
+            ("2",): "2,5",
+            ("2", "1"): "\x00",
+            ("2", "2"): "\xffabc",
+        }
+    )
+
+    monkeypatch.setattr(public_iris, "gref", lambda root: fake_global)
+
+    assert embedded_dbapi._normalize_embedded_result_value(character_ref) == "long text"
+    assert embedded_dbapi._normalize_embedded_result_value(binary_ref) == b"\x00\xffabc"
 
 
 def test_dbapi_embedded_fetches_vector_values_with_getrow(monkeypatch):

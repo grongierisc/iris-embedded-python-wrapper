@@ -118,6 +118,63 @@ def _read_iris_stream(value: Any):
     return content
 
 
+def _read_packed_iris_stream(value: str):
+    if "%Stream." not in value:
+        return _NOT_IRIS_STREAM
+
+    try:
+        packed = IRISList.from_db(value)
+        stream_id = packed[0]
+        class_name = packed[1]
+        stream_root = packed[2]
+    except Exception:
+        return _NOT_IRIS_STREAM
+
+    if class_name not in _IRIS_STREAM_CLASS_NAMES or not stream_root:
+        return _NOT_IRIS_STREAM
+
+    try:
+        import iris as _iris
+
+        stream_global = _iris.gref(str(stream_root))
+        header = stream_global.get([stream_id])
+    except Exception:
+        return _NOT_IRIS_STREAM
+
+    try:
+        chunk_count = int(str(header).split(",", 1)[0])
+    except Exception:
+        chunk_count = 0
+
+    chunks = []
+    for index in range(1, chunk_count + 1):
+        try:
+            chunk = stream_global.get([stream_id, index])
+        except Exception:
+            chunk = None
+        if chunk is None:
+            continue
+        chunks.append(chunk)
+
+    if "Binary" in class_name:
+        binary_chunks = []
+        for chunk in chunks:
+            if isinstance(chunk, bytes):
+                binary_chunks.append(chunk)
+            elif isinstance(chunk, memoryview):
+                binary_chunks.append(chunk.tobytes())
+            elif isinstance(chunk, bytearray):
+                binary_chunks.append(bytes(chunk))
+            else:
+                binary_chunks.append(str(chunk).encode("latin-1"))
+        return b"".join(binary_chunks)
+
+    return "".join(
+        chunk.decode("latin-1") if isinstance(chunk, bytes) else str(chunk)
+        for chunk in chunks
+    )
+
+
 def _normalize_embedded_result_value(value: Any):
     # Embedded %SQL.Statement crosses the SQL/ObjectScript boundary, where
     # SQL NULL becomes the ObjectScript null string ("") and SQL empty string
@@ -127,6 +184,9 @@ def _normalize_embedded_result_value(value: Any):
             return None
         if value == _SQL_EMPTY_STRING_SENTINEL:
             return ""
+        stream_value = _read_packed_iris_stream(value)
+        if stream_value is not _NOT_IRIS_STREAM:
+            return stream_value
         return value
 
     if value is None or isinstance(
@@ -226,6 +286,126 @@ def _normalize_embedded_params(params: Any):
     if isinstance(params, Iterable):
         return [_normalize_embedded_param_value(value) for value in params]
     return _normalize_embedded_param_value(params)
+
+
+def _is_named_bind_start(value: str) -> bool:
+    return value == "_" or value.isalpha()
+
+
+def _is_named_bind_char(value: str) -> bool:
+    return value == "_" or value.isalnum()
+
+
+def _rewrite_named_binds(operation: str) -> tuple[str, tuple[str, ...]]:
+    output = []
+    names = []
+    index = 0
+    length = len(operation)
+
+    while index < length:
+        char = operation[index]
+
+        if char == "'":
+            output.append(char)
+            index += 1
+            while index < length:
+                output.append(operation[index])
+                if operation[index] == "'":
+                    if index + 1 < length and operation[index + 1] == "'":
+                        output.append(operation[index + 1])
+                        index += 2
+                        continue
+                    index += 1
+                    break
+                index += 1
+            continue
+
+        if char == '"':
+            output.append(char)
+            index += 1
+            while index < length:
+                output.append(operation[index])
+                if operation[index] == '"':
+                    if index + 1 < length and operation[index + 1] == '"':
+                        output.append(operation[index + 1])
+                        index += 2
+                        continue
+                    index += 1
+                    break
+                index += 1
+            continue
+
+        if char == "[":
+            output.append(char)
+            index += 1
+            while index < length:
+                output.append(operation[index])
+                if operation[index] == "]":
+                    index += 1
+                    break
+                index += 1
+            continue
+
+        if char == "-" and index + 1 < length and operation[index + 1] == "-":
+            end = operation.find("\n", index + 2)
+            if end == -1:
+                output.append(operation[index:])
+                break
+            output.append(operation[index:end + 1])
+            index = end + 1
+            continue
+
+        if char == "/" and index + 1 < length and operation[index + 1] == "*":
+            end = operation.find("*/", index + 2)
+            if end == -1:
+                output.append(operation[index:])
+                break
+            output.append(operation[index:end + 2])
+            index = end + 2
+            continue
+
+        if char == ":" and index + 1 < length:
+            next_char = operation[index + 1]
+            if next_char == ":":
+                output.append("::")
+                index += 2
+                continue
+
+            if _is_named_bind_start(next_char):
+                end = index + 2
+                while end < length and _is_named_bind_char(operation[end]):
+                    end += 1
+                names.append(operation[index + 1:end])
+                output.append("?")
+                index = end
+                continue
+
+        output.append(char)
+        index += 1
+
+    return "".join(output), tuple(names)
+
+
+def _ordered_named_params(
+    operation: str,
+    params: dict[Any, Any],
+) -> tuple[str, tuple[Any, ...]]:
+    rewritten_operation, names = _rewrite_named_binds(operation)
+    if not names:
+        if params:
+            raise InterfaceError("Dictionary parameters require named SQL placeholders")
+        return rewritten_operation, ()
+
+    ordered_params = []
+    for name in names:
+        if name in params:
+            ordered_params.append(params[name])
+        elif f":{name}" in params:
+            ordered_params.append(params[f":{name}"])
+        else:
+            raise InterfaceError(f"Missing named SQL parameter: {name}")
+
+    return rewritten_operation, tuple(ordered_params)
 
 
 def _raise_for_statement_error(result: Any):
@@ -986,23 +1166,33 @@ class _EmbeddedCursor:
         cls_fn = self.connection._cls_fn
 
         try:
-            if operation in self._statement_cache:
-                statement = self._statement_cache[operation]
+            normalized_params = None
+            statement_operation = operation
+            ordered_named_params = None
+            if isinstance(params, dict):
+                normalized_params = _normalize_embedded_params(params)
+                statement_operation, ordered_named_params = _ordered_named_params(
+                    operation,
+                    normalized_params,
+                )
+
+            if statement_operation in self._statement_cache:
+                statement = self._statement_cache[statement_operation]
             else:
                 if self.connection._sql_statement_class is None:
                     self.connection._sql_statement_class = cls_fn("%SQL.Statement")
                 statement = self.connection._sql_statement_class._New()
-                prepare_status = statement._Prepare(operation)
+                prepare_status = statement._Prepare(statement_operation)
                 if prepare_status != 1:
                     raise DatabaseError(str(prepare_status))
-                self._statement_cache[operation] = statement
+                self._statement_cache[statement_operation] = statement
             if params is None:
                 raw = statement._Execute()
+            elif ordered_named_params is not None:
+                raw = statement._Execute(*ordered_named_params)
             else:
                 normalized_params = _normalize_embedded_params(params)
-                if isinstance(normalized_params, dict):
-                    raw = statement._Execute(**normalized_params)
-                elif isinstance(normalized_params, (tuple, list)):
+                if isinstance(normalized_params, (tuple, list)):
                     raw = statement._Execute(*normalized_params)
                 elif isinstance(normalized_params, (str, bytes)):
                     raw = statement._Execute(normalized_params)
