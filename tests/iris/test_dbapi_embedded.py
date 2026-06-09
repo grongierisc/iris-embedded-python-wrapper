@@ -52,6 +52,78 @@ class FakeStatementWithRowcount(FakeStatement):
         return FakeStatementResultWithRowcount(rowcount)
 
 
+class FakeMetadataColumn:
+    def __init__(
+        self,
+        label,
+        client_type=10,
+        runtime_type=None,
+        sql_category=None,
+        is_expression=0,
+        precision=10,
+    ):
+        self.label = label
+        self.colName = label
+        self.clientType = client_type
+        self.isExpression = is_expression
+        self.precision = precision
+        self.property = types.SimpleNamespace(RuntimeType=runtime_type, Type=runtime_type)
+        self.typeClass = types.SimpleNamespace(Name=runtime_type, SqlCategory=sql_category)
+
+
+class FakeMetadataColumns:
+    def __init__(self, columns):
+        self._columns = columns
+
+    def GetAt(self, index):
+        return self._columns[index - 1]
+
+
+class FakeMetadata:
+    def __init__(self, columns):
+        self.columns = FakeMetadataColumns(columns)
+        self.columnCount = len(columns)
+
+
+class FakeVectorStatementResult:
+    def __init__(self, rows, columns):
+        self._rows = rows
+        self._columns = columns
+        self._index = -1
+        self._ResultColumnCount = len(columns)
+
+    def _GetMetadata(self):
+        return FakeMetadata(self._columns)
+
+    def _Next(self):
+        self._index += 1
+        return self._index < len(self._rows)
+
+    def _GetData(self, index):
+        column = self._columns[index - 1]
+        if getattr(column.property, "RuntimeType", None) == "%Library.Vector":
+            raise TypeError("Unsupported type")
+        return self._rows[self._index][index - 1]
+
+    def _GetRow(self, row_ref):
+        self._index += 1
+        if self._index >= len(self._rows):
+            return 0
+        row_ref.value = self._rows[self._index]
+        return 1
+
+
+class FakeVectorStatement(FakeStatement):
+    def __init__(self, rows, columns):
+        super().__init__(rows)
+        self.columns = columns
+
+    def _Execute(self, *args, **kwargs):
+        self.execute_args = args
+        self.execute_kwargs = kwargs
+        return FakeVectorStatementResult(self.rows, self.columns)
+
+
 def test_dbapi_embedded_execute_and_fetch(monkeypatch):
     fake_statement = FakeStatement([(10, "x"), (20, "y")])
 
@@ -327,6 +399,44 @@ def test_dbapi_embedded_fetches_stream_values(monkeypatch):
     assert cur.fetchone() == ("long text", b"\x00\xff")
     assert character_stream.rewound
     assert binary_stream.rewound
+
+
+def test_dbapi_embedded_fetches_vector_values_with_getrow(monkeypatch):
+    fake_statement = FakeVectorStatement(
+        [(1, "row one", "1,2,3")],
+        [
+            FakeMetadataColumn("id", client_type=5),
+            FakeMetadataColumn("name", client_type=10, runtime_type="%Library.String"),
+            FakeMetadataColumn(
+                "embedding",
+                client_type=10,
+                runtime_type="%Library.Vector",
+                sql_category="VECTOR",
+            ),
+        ],
+    )
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-kernel",
+            dbapi=None,
+        ),
+    )
+
+    conn = iris.dbapi.connect(mode="embedded")
+    cur = conn.cursor()
+
+    cur.execute("select id, name, embedding from Demo")
+
+    assert cur.fetchone() == (1, "row one", "1,2,3")
 
 
 def test_dbapi_embedded_prefers_sql_statement(monkeypatch):

@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from decimal import Decimal
 from enum import Enum
 from typing import Any, Callable, Optional
+from uuid import uuid4
 
 from ._dbapi_exceptions import (
     DatabaseError,
@@ -31,6 +32,7 @@ _IRIS_STREAM_CLASS_NAMES = frozenset(
     }
 )
 _NOT_IRIS_STREAM = object()
+_VECTOR_CACHE_GLOBAL = "iris_dbapi_vector"
 
 
 def _safe_getattr(value: Any, name: str, default: Any = None):
@@ -143,6 +145,90 @@ def _normalize_embedded_result_row(row: Any):
     if isinstance(row, list):
         return [_normalize_embedded_result_value(value) for value in row]
     return _normalize_embedded_result_value(row)
+
+
+class _EmbeddedByRef:
+    def __init__(self, value: Any = ""):
+        self.value = value
+
+
+def _make_embedded_ref(value: Any = ""):
+    try:
+        import iris as _iris
+
+        ref_factory = getattr(_iris, "ref", None)
+        if callable(ref_factory):
+            return ref_factory(value)
+    except Exception:
+        pass
+
+    return _EmbeddedByRef(value)
+
+
+def _objectscript_quote(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _vector_cache_root(cache_key: str) -> str:
+    return (
+        f"^CacheTemp({_objectscript_quote(_VECTOR_CACHE_GLOBAL)},"
+        f"{_objectscript_quote(cache_key)}"
+    )
+
+
+def _decode_embedded_row_list(
+    row_value: Any,
+    column_count: int,
+    vector_column_indices: tuple[int, ...],
+    cache_key: str,
+) -> tuple[Any, ...]:
+    if isinstance(row_value, tuple):
+        return row_value
+    if isinstance(row_value, list):
+        return tuple(row_value)
+
+    try:
+        import iris as _iris
+
+        gref = getattr(_iris, "gref")
+        execute = getattr(_iris, "execute")
+    except Exception as exc:
+        raise InterfaceError("Embedded VECTOR decoding requires iris.gref and iris.execute") from exc
+
+    cache = gref("^CacheTemp")
+    cache_subscripts = [_VECTOR_CACHE_GLOBAL, cache_key]
+    root = _vector_cache_root(cache_key)
+    row_ref = f'{root},"row")'
+    out_base = f'{root},"out")'
+    out_i = f'{root},"out",i)'
+
+    try:
+        cache.set(cache_subscripts + ["row"], row_value)
+        execute(
+            f"set row={row_ref} "
+            f"kill {out_base} "
+            f"for i=1:1:{column_count} set {out_i}=$listget(row,i)"
+        )
+        for index in vector_column_indices:
+            out_col = f'{root},"out",{index})'
+            execute(
+                f"set row={row_ref},raw=$listget(row,{index}),{out_col}=raw "
+                f"if raw'=\"\",$isvector(raw) "
+                f"set out=\"\",{out_col}=\"\" "
+                f"for j=1:1:$vectorop(\"length\",raw) "
+                f"set out=out_$select(j=1:\"\",1:\",\")_$vector(raw,j) "
+                f"set {out_col}=out"
+            )
+
+        values = []
+        for index in range(1, column_count + 1):
+            values.append(cache.get(cache_subscripts + ["out", index]))
+        return tuple(values)
+    finally:
+        try:
+            cache.kill(cache_subscripts)
+        except Exception:
+            pass
 
 
 def _normalize_embedded_param_value(value: Any):
@@ -313,6 +399,69 @@ def _integer_result_processor(value: Any):
     return value
 
 
+def _vector_result_processor(value: Any):
+    return _normalize_embedded_result_value(value)
+
+
+def _is_vector_metadata_column(column: Any) -> bool:
+    for attr_name in ("property", "typeClass"):
+        try:
+            metadata_object = getattr(column, attr_name)
+        except Exception:
+            continue
+
+        for type_attr in ("RuntimeType", "Type", "Name"):
+            try:
+                if getattr(metadata_object, type_attr) == "%Library.Vector":
+                    return True
+            except Exception:
+                pass
+
+        try:
+            if getattr(metadata_object, "SqlCategory") == "VECTOR":
+                return True
+        except Exception:
+            pass
+
+    return False
+
+
+def _is_potential_vector_expression_column(column: Any) -> bool:
+    try:
+        if int(getattr(column, "isExpression")) != 1:
+            return False
+        if int(getattr(column, "clientType")) != 10:
+            return False
+        return int(getattr(column, "precision")) == 64000
+    except Exception:
+        return False
+
+
+def _is_vector_result_column(column: Any) -> bool:
+    return _is_vector_metadata_column(column) or _is_potential_vector_expression_column(
+        column
+    )
+
+
+def _get_vector_column_indices(result: Any, column_count: int) -> tuple[int, ...]:
+    try:
+        metadata = result._GetMetadata()
+        columns = metadata.columns
+    except Exception:
+        return ()
+
+    vector_columns: list[int] = []
+    for index in range(1, column_count + 1):
+        try:
+            column = columns.GetAt(index)
+        except Exception:
+            continue
+        if _is_vector_result_column(column):
+            vector_columns.append(index)
+
+    return tuple(vector_columns)
+
+
 def _get_result_processors(
     result: Any, column_count: int
 ) -> Optional[tuple[Callable[[Any], Any], ...]]:
@@ -325,11 +474,18 @@ def _get_result_processors(
     processors: list[Callable[[Any], Any]] = []
     for index in range(1, column_count + 1):
         try:
-            client_type = int(getattr(columns.GetAt(index), "clientType"))
+            column = columns.GetAt(index)
+        except Exception:
+            column = None
+
+        try:
+            client_type = int(getattr(column, "clientType"))
         except Exception:
             client_type = None
 
-        if client_type == 1:
+        if column is not None and _is_vector_result_column(column):
+            processors.append(_vector_result_processor)
+        elif client_type == 1:
             processors.append(_binary_result_processor)
         elif client_type in (5, 16, 18):
             processors.append(_integer_result_processor)
@@ -346,11 +502,14 @@ class _StatementResultIterator:
         column_count: Optional[int] = None,
         projected_columns: Optional[list[str]] = None,
         processors: Optional[tuple[Callable[[Any], Any], ...]] = None,
+        vector_column_indices: Optional[tuple[int, ...]] = None,
     ):
         self._statement_result = statement_result
         self._column_count = column_count
         self._projected_columns = projected_columns or []
         self._processors = processors
+        self._vector_column_indices = vector_column_indices or ()
+        self._vector_cache_key = uuid4().hex if self._vector_column_indices else ""
         # Pre-built index tuple — avoids constructing range() on every __next__ call.
         self._column_indices: Optional[tuple[int, ...]] = (
             tuple(range(1, column_count + 1))
@@ -391,7 +550,35 @@ class _StatementResultIterator:
     def __iter__(self):
         return self
 
+    def _next_vector_row(self):
+        sr = self._statement_result
+        get_row = getattr(sr, "_GetRow", None)
+        if not callable(get_row):
+            raise InterfaceError("Unsupported %SQL.Statement VECTOR result object")
+
+        row_ref = _make_embedded_ref("")
+        if not get_row(row_ref):
+            _raise_for_statement_error(sr)
+            raise StopIteration
+
+        if self._column_count is None:
+            raise InterfaceError("Unsupported %SQL.Statement VECTOR result object")
+
+        row = _decode_embedded_row_list(
+            row_ref.value,
+            self._column_count,
+            self._vector_column_indices,
+            self._vector_cache_key,
+        )
+        processors = self._processors
+        if processors is not None:
+            return tuple(processor(value) for processor, value in zip(processors, row))
+        return _normalize_embedded_result_row(row)
+
     def __next__(self):
+        if self._vector_column_indices:
+            return self._next_vector_row()
+
         sr = self._statement_result
         if not sr._Next():
             _raise_for_statement_error(sr)
@@ -627,6 +814,7 @@ class _EmbeddedCursor:
         self._description_cache: dict[str, Any] = {}
         self._needs_transaction_cache: dict[str, bool] = {}
         self._returns_rows_cache: dict[str, bool] = {}
+        self._vector_column_cache: dict[str, tuple[int, ...]] = {}
 
     def __enter__(self):
         return self
@@ -653,6 +841,7 @@ class _EmbeddedCursor:
         self._description_cache.clear()
         self._needs_transaction_cache.clear()
         self._returns_rows_cache.clear()
+        self._vector_column_cache.clear()
 
     def execute(self, operation: str, params: Optional[Any] = None):
         if self._closed:
@@ -705,11 +894,17 @@ class _EmbeddedCursor:
                 self._column_count_cache[operation] = known_col_count
 
         cached_processors = self._processor_cache.get(operation)
+        cached_vector_columns = (
+            self._vector_column_cache[operation]
+            if operation in self._vector_column_cache
+            else None
+        )
         result_iter = self._make_statement_result_iter(
             result,
             projected_columns,
             known_col_count,
             cached_processors,
+            cached_vector_columns,
         )
         if result_iter is None:
             raise InterfaceError("Unsupported %SQL.Statement result object")
@@ -724,6 +919,11 @@ class _EmbeddedCursor:
             and isinstance(result_iter, _StatementResultIterator)
         ):
             self._processor_cache[operation] = result_iter._processors
+        if (
+            operation not in self._vector_column_cache
+            and isinstance(result_iter, _StatementResultIterator)
+        ):
+            self._vector_column_cache[operation] = result_iter._vector_column_indices
 
         # PEP 249: cursor.description must be non-None for row-returning
         # statements; ORM consumers (e.g. SQLAlchemy) rely on it to detect
@@ -888,18 +1088,22 @@ class _EmbeddedCursor:
         projected_columns: Optional[list[str]] = None,
         known_col_count: Optional[int] = None,
         processors: Optional[tuple[Callable[[Any], Any], ...]] = None,
+        vector_column_indices: Optional[tuple[int, ...]] = None,
     ):
         try:
             # Fast path: column count already known — skip all probing.
             if known_col_count is not None and known_col_count > 0:
                 if processors is None:
                     processors = _get_result_processors(result, known_col_count)
+                if vector_column_indices is None:
+                    vector_column_indices = _get_vector_column_indices(result, known_col_count)
                 return iter(
                     _StatementResultIterator(
                         result,
                         column_count=known_col_count,
                         projected_columns=projected_columns,
                         processors=processors,
+                        vector_column_indices=vector_column_indices,
                     )
                 )
 
@@ -937,6 +1141,11 @@ class _EmbeddedCursor:
                     projected_columns=projected_columns,
                     processors=(
                         _get_result_processors(result, column_count)
+                        if column_count is not None and column_count > 0
+                        else None
+                    ),
+                    vector_column_indices=(
+                        _get_vector_column_indices(result, column_count)
                         if column_count is not None and column_count > 0
                         else None
                     ),
