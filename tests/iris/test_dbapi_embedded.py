@@ -1,6 +1,10 @@
 from decimal import Decimal
+import iris as public_iris
 import iris_embedded_python as iris
 import _iris_ep
+import _iris_ep._dbapi_embedded as embedded_dbapi
+import _iris_ep._vector as vector_module
+import sys
 import types
 
 from tests.iris._dbapi_fakes import (
@@ -122,6 +126,109 @@ class FakeVectorStatement(FakeStatement):
         self.execute_args = args
         self.execute_kwargs = kwargs
         return FakeVectorStatementResult(self.rows, self.columns)
+
+
+def test_public_byref_helper(monkeypatch):
+    assert iris.ByRef is public_iris.ByRef
+    assert not hasattr(iris.dbapi, "ByRef")
+    assert not hasattr(iris.dbapi, "make_ref")
+    assert not hasattr(iris.dbapi, "IRISVector")
+    assert not hasattr(iris.dbapi, "Vector")
+
+    ref = public_iris.ByRef("start")
+    assert ref.value == "start"
+    ref.value = "done"
+    assert ref.value == "done"
+
+    monkeypatch.setitem(sys.modules, "iris", types.SimpleNamespace())
+    fallback_ref = public_iris.make_ref("fallback")
+    assert isinstance(fallback_ref, public_iris.ByRef)
+    assert fallback_ref.value == "fallback"
+
+
+def test_public_make_ref_uses_runtime_ref(monkeypatch):
+    class FakeRef:
+        def __init__(self, value=""):
+            self.value = value
+
+    monkeypatch.setitem(sys.modules, "iris", types.SimpleNamespace(ref=FakeRef))
+
+    ref = public_iris.make_ref("native")
+
+    assert isinstance(ref, FakeRef)
+    assert ref.value == "native"
+
+
+def test_dbapi_vector_normalizes_as_embedded_param():
+    assert iris.Vector is public_iris.Vector
+    assert iris.IRISVector is public_iris.IRISVector
+    assert public_iris.Vector is public_iris.IRISVector
+
+    vector = public_iris.Vector([1, "2.5", Decimal("3.0")])
+
+    assert isinstance(vector, public_iris.IRISVector)
+    assert list(vector) == [Decimal("1"), Decimal("2.5"), Decimal("3.0")]
+    assert vector.to_param() == "1,2.5,3.0"
+    assert str(vector) == "1,2.5,3.0"
+    assert vector.to_json_array() == "[1,2.5,3.0]"
+    assert vector.to_sql() == "TO_VECTOR(?, decimal)"
+    assert embedded_dbapi._normalize_embedded_params((vector,)) == ("1,2.5,3.0",)
+    assert embedded_dbapi._normalize_embedded_params({"v": vector}) == {
+        "v": "1,2.5,3.0"
+    }
+
+
+def test_dbapi_vector_parses_fetched_string_and_int_dtype():
+    vector = public_iris.Vector.from_db("[1,2,3]", dtype="int")
+
+    assert list(vector) == [1, 2, 3]
+    assert vector.dtype == "integer"
+    assert vector.to_param() == "1,2,3"
+    assert vector.to_sql(":embedding") == "TO_VECTOR(:embedding, integer)"
+
+    float_vector = public_iris.Vector([1, 2, 3], dtype="float")
+    assert float_vector.dtype == "float"
+    assert list(float_vector) == [1.0, 2.0, 3.0]
+    assert float_vector.to_sql(":embedding") == "TO_VECTOR(:embedding, float)"
+
+
+def test_dbapi_vector_operations_delegate_to_iris_vectorop(monkeypatch):
+    calls = []
+
+    def fake_execute(operation, left, right=None, *, returns_vector):
+        calls.append(
+            (
+                operation,
+                left.to_param(),
+                getattr(right, "to_param", lambda: right)(),
+                returns_vector,
+            )
+        )
+        if returns_vector:
+            return public_iris.Vector([9, 9, 9], dtype=left.dtype)
+        return {
+            "sum": 6,
+            "dot-product": 32,
+            "cosine-similarity": 1,
+        }[operation]
+
+    monkeypatch.setattr(vector_module, "_execute_iris_vector_operation", fake_execute)
+
+    vector = public_iris.Vector([1, 2, 3])
+
+    assert vector.sum() == 6
+    assert vector.dot([4, 5, 6]) == 32
+    assert vector.cosine(public_iris.Vector([1, 2, 3])) == 1
+    assert vector.add([4, 5, 6]).to_param() == "9,9,9"
+    assert vector.add(2).to_param() == "9,9,9"
+
+    assert calls == [
+        ("sum", "1,2,3", None, False),
+        ("dot-product", "1,2,3", "4,5,6", False),
+        ("cosine-similarity", "1,2,3", "1,2,3", False),
+        ("v+", "1,2,3", "4,5,6", True),
+        ("+", "1,2,3", 2, True),
+    ]
 
 
 def test_dbapi_embedded_execute_and_fetch(monkeypatch):

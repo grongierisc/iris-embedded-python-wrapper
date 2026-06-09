@@ -52,6 +52,9 @@ class MockIRISNativeConnection:
         self.invoked_methods.append((class_name, method_name, args))
         if class_name == "User.Bar" and method_name == "%OpenId":
             return MockIRISObject(db=self)
+        if class_name == "User.Bar" and method_name == "Foo":
+            args[1].setValue(42)
+            return 1
         return "Success"
 
     def classMethodValue(self, class_name, method_name, *args):
@@ -90,6 +93,9 @@ class MockIRISNativeConnection:
     def invoke(self, oref, method_name, *args):
         self.invoked_methods.append(("Instance", method_name, args))
         if method_name == "%Save":
+            return 1
+        if method_name == "Foo":
+            args[0].setValue(99)
             return 1
         return "MethodSuccess"
         
@@ -181,6 +187,65 @@ def test_runtime_reset_clears_native_handle():
 
     assert iris.runtime.iris is None
     assert iris.runtime.mode == "auto"
+
+
+def test_native_proxy_class_method_supports_byref():
+    db = MockIRISNativeConnection()
+    ref = iris.ByRef(0, int)
+
+    iris.runtime.configure(mode="native", iris=db)
+
+    try:
+        result = iris.cls("User.Bar").Foo("input", ref)
+    finally:
+        iris.runtime.reset()
+
+    assert result == 1
+    assert ref.value == 42
+    class_name, method_name, args = db.invoked_methods[-1]
+    assert (class_name, method_name) == ("User.Bar", "Foo")
+    assert args[0] == "input"
+    assert args[1] is not ref
+    assert hasattr(args[1], "setValue")
+    assert args[1].get_type() is int
+
+
+def test_native_proxy_instance_method_supports_byref():
+    db = MockIRISNativeConnection()
+    ref = iris.ByRef(0, int)
+
+    iris.runtime.configure(mode="native", iris=db)
+
+    try:
+        obj = iris.cls("User.Bar")._OpenId(1)
+        result = obj.Foo(ref)
+    finally:
+        iris.runtime.reset()
+
+    assert result == 1
+    assert ref.value == 99
+    target, method_name, args = db.invoked_methods[-1]
+    assert (target, method_name) == ("Instance", "Foo")
+    assert args[0] is not ref
+    assert hasattr(args[0], "setValue")
+    assert args[0].get_type() is int
+
+
+def test_native_proxy_converts_vector_method_args():
+    db = MockIRISNativeConnection()
+    vector = iris.Vector([1, 2, 3])
+
+    iris.runtime.configure(mode="native", iris=db)
+
+    try:
+        iris.cls("User.Bar").VectorArg(vector)
+        obj = iris.cls("User.Bar")._OpenId(1)
+        obj.VectorArg(vector)
+    finally:
+        iris.runtime.reset()
+
+    assert db.invoked_methods[-3] == ("User.Bar", "VectorArg", ("1,2,3",))
+    assert db.invoked_methods[-1] == ("Instance", "VectorArg", ("1,2,3",))
 
 
 def test_runtime_configure_accepts_native_connection_and_converts(monkeypatch):

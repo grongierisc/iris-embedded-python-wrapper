@@ -413,6 +413,73 @@ For the native object proxy path (`iris.cls(...)` with `iris.runtime` configured
 - collection-valued properties are left unchanged
 - arbitrary method return values are left unchanged
 
+#### Bridge helpers
+
+##### ByRef
+
+`iris.ByRef(value)` is a lightweight by-reference container with a mutable
+`.value` attribute. `iris.make_ref(value)` returns `iris.ref` when the
+embedded runtime exposes it and falls back to `ByRef` otherwise.
+
+For ObjectScript methods that declare a `ByRef` argument:
+
+```objectscript
+ClassMethod foo(pMyString As %String, ByRef pMyRef As %Integer) As %Status
+{
+	Set pMyRef = pMyRef + 1
+	Quit $$$OK
+}
+```
+
+Call the method with `iris.ByRef`. After the call returns, the wrapper copies
+the final ObjectScript value back to `ref.value`:
+
+```python
+ref = iris.ByRef(0, int)
+status = iris.cls("User.Demo").foo("abc", ref)
+print(ref.value)
+```
+
+This works for embedded calls and for remote/native bridge calls. In native
+mode, the bridge maps `ByRef` to the official Native API reference type for
+class and instance methods.
+
+##### Vector
+
+`iris.Vector(values, dtype="decimal")` is a Python value wrapper for IRIS SQL
+`VECTOR` parameters and embedded vector operations. It serializes as the
+comma-separated value string expected by `TO_VECTOR`.
+The native bridge sends `Vector` method arguments using that same
+comma-separated representation.
+
+```python
+import iris
+
+embedding = iris.Vector([1, 2, 3], dtype="decimal")
+
+conn = iris.dbapi.connect(mode="embedded")
+cur = conn.cursor()
+cur.execute(
+	"INSERT INTO Demo.VectorTable (embedding) VALUES (TO_VECTOR(?, decimal))",
+	(embedding,),
+)
+
+cur.execute("SELECT embedding FROM Demo.VectorTable")
+fetched = iris.Vector.from_db(cur.fetchone()[0], dtype="decimal")
+
+assert fetched.sum() == 6
+assert fetched.dot([4, 5, 6]) == 32
+assert fetched.cosine(fetched) == 1
+```
+
+Direct `?` binding into a `VECTOR` column is not enough; cast the parameter
+with SQL `TO_VECTOR(?, decimal)`, `TO_VECTOR(?, double)`, or
+`TO_VECTOR(?, integer)`. `dtype="float"` is also accepted for SQL `VECTOR`
+storage; embedded `$VECTOROP` operations evaluate that value as an
+ObjectScript double because `$VECTOR` has no float storage type. Vector
+operations delegate to embedded ObjectScript `$VECTOROP`, so they require an
+embedded runtime with `iris.gref` and `iris.execute` available.
+
 #### Connect modes
 
 `iris.dbapi.connect()` accepts `mode="auto" | "embedded" | "native"`.

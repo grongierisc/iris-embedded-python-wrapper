@@ -74,6 +74,15 @@ def rebind_wrapper_symbols(module_globals):
         if callable(bind_backends):
             bind_backends(native_connect=driver_connect)
 
-    for name in ("runtime", "dbapi", "cls", "connect"):
+    for name in (
+        "runtime",
+        "dbapi",
+        "cls",
+        "connect",
+        "ByRef",
+        "make_ref",
+        "IRISVector",
+        "Vector",
+    ):
         if hasattr(iris_ep_module, name):
             module_globals[name] = getattr(iris_ep_module, name)

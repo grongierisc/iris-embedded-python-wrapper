@@ -11,7 +11,17 @@ from iris_utils._module_exports import copy_public_exports
 from . import _bootstrap
 from ._dbapi import make_dbapi
 
-_WRAPPER_EXPORTS = {"_runtime", "runtime", "dbapi", "cls", "connect"}
+_WRAPPER_EXPORTS = {
+    "_runtime",
+    "runtime",
+    "dbapi",
+    "cls",
+    "connect",
+    "ByRef",
+    "make_ref",
+    "IRISVector",
+    "Vector",
+}
 _NATIVE_CONNECT_KWARGS = {
     "hostname",
     "host",
@@ -298,7 +308,16 @@ class RuntimeFacade:
                 if not name.startswith("_")
             ]
 
-        for name in ("runtime", "dbapi", "cls", "connect"):
+        for name in (
+            "runtime",
+            "dbapi",
+            "cls",
+            "connect",
+            "ByRef",
+            "make_ref",
+            "IRISVector",
+            "Vector",
+        ):
             if name not in exported_names:
                 exported_names.append(name)
 
@@ -352,7 +371,19 @@ class RuntimeFacade:
         exported_names = self.module_globals.get("__all__")
         if isinstance(exported_names, (list, tuple, set)):
             public_names.update(str(name) for name in exported_names)
-        public_names.update(("runtime", "dbapi", "cls", "connect", "system"))
+        public_names.update(
+            (
+                "runtime",
+                "dbapi",
+                "cls",
+                "connect",
+                "system",
+                "ByRef",
+                "make_ref",
+                "IRISVector",
+                "Vector",
+            )
+        )
 
         for module_name in ("iris", "iris_ep", "iris_embedded_python"):
             module = sys.modules.get(module_name)

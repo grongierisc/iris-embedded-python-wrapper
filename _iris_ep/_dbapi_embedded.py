@@ -7,12 +7,14 @@ from enum import Enum
 from typing import Any, Callable, Optional
 from uuid import uuid4
 
+from ._byref import ByRef, make_ref
 from ._dbapi_exceptions import (
     DatabaseError,
     Error,
     InterfaceError,
     OperationalError,
 )
+from ._vector import IRISVector
 
 _VALID_ISOLATION_LEVELS = frozenset({
     "READ UNCOMMITTED",
@@ -147,22 +149,10 @@ def _normalize_embedded_result_row(row: Any):
     return _normalize_embedded_result_value(row)
 
 
-class _EmbeddedByRef:
-    def __init__(self, value: Any = ""):
-        self.value = value
+_EmbeddedByRef = ByRef
 
 
-def _make_embedded_ref(value: Any = ""):
-    try:
-        import iris as _iris
-
-        ref_factory = getattr(_iris, "ref", None)
-        if callable(ref_factory):
-            return ref_factory(value)
-    except Exception:
-        pass
-
-    return _EmbeddedByRef(value)
+_make_embedded_ref = make_ref
 
 
 def _objectscript_quote(value: str) -> str:
@@ -234,6 +224,8 @@ def _decode_embedded_row_list(
 def _normalize_embedded_param_value(value: Any):
     if value is None:
         return ""
+    if isinstance(value, IRISVector):
+        return value.to_param()
     if isinstance(value, bool):
         return int(value)
     if isinstance(value, Enum):
@@ -250,6 +242,8 @@ def _normalize_embedded_param_value(value: Any):
 def _embedded_param_needs_normalization(value: Any) -> bool:
     if value is None:
         return True
+    if isinstance(value, IRISVector):
+        return True
     value_type = type(value)
     if value_type is bool:
         return True
@@ -263,6 +257,8 @@ def _embedded_param_needs_normalization(value: Any) -> bool:
 
 
 def _normalize_embedded_params(params: Any):
+    if isinstance(params, IRISVector):
+        return _normalize_embedded_param_value(params)
     if isinstance(params, dict):
         normalized = None
         for key, value in params.items():

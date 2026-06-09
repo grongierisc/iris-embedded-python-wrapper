@@ -1,5 +1,16 @@
 import logging
 
+try:
+    from _iris_ep._byref import ByRef
+except Exception:  # pragma: no cover - iris_utils can be imported standalone.
+    ByRef = None
+
+try:
+    from _iris_ep._vector import IRISVector
+except Exception:  # pragma: no cover - iris_utils can be imported standalone.
+    IRISVector = None
+
+
 def wrap_result(res, db):
     """
     Wraps the result from Native API if it is an IRISObject.
@@ -49,14 +60,89 @@ def wrap_result(res, db):
     return res
 
 
+def _is_vector(value):
+    return IRISVector is not None and isinstance(value, IRISVector)
+
+
+def _wrap_value(value):
+    if isinstance(value, NativeObjectProxy):
+        return value._oref
+    if _is_vector(value):
+        return value.to_param()
+    return value
+
+
 def _wrap_args(args, db):
-    new_args = []
+    return [_wrap_value(value) for value in args]
+
+
+def _get_native_reference_class(db):
+    module_names = []
+    db_module = getattr(type(db), "__module__", "")
+    if db_module:
+        module_names.append(db_module.split(".", 1)[0])
+    module_names.extend(("iris", "intersystems_iris"))
+
+    for module_name in module_names:
+        try:
+            module = __import__(module_name)
+            reference_cls = getattr(module, "IRISReference", None)
+        except Exception:
+            reference_cls = None
+        if reference_cls is not None:
+            return reference_cls
+
+    return None
+
+
+def _is_byref(value):
+    return ByRef is not None and isinstance(value, ByRef)
+
+
+def _make_native_reference(value, db):
+    reference_cls = _get_native_reference_class(db)
+    if reference_cls is None:
+        return None
+
+    native_value = _wrap_value(value.value)
+    try:
+        return reference_cls(native_value, value.type)
+    except TypeError:
+        return reference_cls(native_value)
+
+
+def _read_native_reference(reference):
+    for method_name in ("getValue", "get_value", "getObject"):
+        method = getattr(reference, method_name, None)
+        if callable(method):
+            return method()
+    return getattr(reference, "value")
+
+
+def _wrap_args_with_refs(args, db):
+    wrapped_args = []
+    refs = []
+
     for value in args:
-        if isinstance(value, NativeObjectProxy):
-            new_args.append(value._oref)
+        if _is_byref(value):
+            native_ref = _make_native_reference(value, db)
+            if native_ref is None:
+                wrapped_args.append(_wrap_value(value.value))
+            else:
+                wrapped_args.append(native_ref)
+                refs.append((value, native_ref))
         else:
-            new_args.append(value)
-    return new_args
+            wrapped_args.append(_wrap_value(value))
+
+    return wrapped_args, refs
+
+
+def _copy_refs_back(refs):
+    for byref, native_ref in refs:
+        value = _read_native_reference(native_ref)
+        if _is_vector(byref.value):
+            value = IRISVector(value, dtype=byref.value.dtype)
+        byref.value = value
 
 class NativeClassProxy:
     def __init__(self, class_name, db):
@@ -68,7 +154,13 @@ class NativeClassProxy:
         mapped_name = name.replace("_", "%", 1) if name.startswith("_") else name
 
         def method_proxy(*args):
-            res = self._db.classMethodValue(self._class_name, mapped_name, *_wrap_args(args, self._db))
+            wrapped_args, refs = _wrap_args_with_refs(args, self._db)
+            res = self._db.classMethodValue(
+                self._class_name,
+                mapped_name,
+                *wrapped_args,
+            )
+            _copy_refs_back(refs)
             return wrap_result(res, self._db)
 
         return method_proxy
@@ -143,7 +235,9 @@ class NativeObjectProxy:
             return wrap_result(val, self._db)
         else:
             def method_proxy(*args):
-                res = self._oref.invoke(mapped_name, *_wrap_args(args, self._db))
+                wrapped_args, refs = _wrap_args_with_refs(args, self._db)
+                res = self._oref.invoke(mapped_name, *wrapped_args)
+                _copy_refs_back(refs)
                 return wrap_result(res, self._db)
             return method_proxy
 

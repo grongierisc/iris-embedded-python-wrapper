@@ -3,7 +3,10 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from . import _dbapi_native
-from ._dbapi_embedded import _DEFAULT_ISOLATION_LEVEL, _EmbeddedConnection
+from ._dbapi_embedded import (
+    _DEFAULT_ISOLATION_LEVEL,
+    _EmbeddedConnection,
+)
 from ._dbapi_exceptions import (
     Binary,
     DataError,
