@@ -10,6 +10,12 @@ try:
 except Exception:  # pragma: no cover - iris_utils can be imported standalone.
     IRISVector = None
 
+try:
+    from _iris_ep._list import IRISList, _get_native_iris_list_class
+except Exception:  # pragma: no cover - iris_utils can be imported standalone.
+    IRISList = None
+    _get_native_iris_list_class = None
+
 
 def wrap_result(res, db):
     """
@@ -64,16 +70,27 @@ def _is_vector(value):
     return IRISVector is not None and isinstance(value, IRISVector)
 
 
-def _wrap_value(value):
+def _is_iris_list(value):
+    return IRISList is not None and isinstance(value, IRISList)
+
+
+def _wrap_value(value, db=None):
     if isinstance(value, NativeObjectProxy):
         return value._oref
     if _is_vector(value):
         return value.to_param()
+    if _is_iris_list(value):
+        native_cls = (
+            _get_native_iris_list_class(db)
+            if callable(_get_native_iris_list_class)
+            else None
+        )
+        return value.to_native(native_cls)
     return value
 
 
 def _wrap_args(args, db):
-    return [_wrap_value(value) for value in args]
+    return [_wrap_value(value, db) for value in args]
 
 
 def _get_native_reference_class(db):
@@ -104,7 +121,15 @@ def _make_native_reference(value, db):
     if reference_cls is None:
         return None
 
-    native_value = _wrap_value(value.value)
+    if IRISList is not None and (
+        _is_iris_list(value.value) or value.type is IRISList
+    ):
+        raise RuntimeError(
+            "Native ByRef IRISList is not supported because the native "
+            "IRISReference value path cannot reliably materialize IRISList values"
+        )
+
+    native_value = _wrap_value(value.value, db)
     try:
         return reference_cls(native_value, value.type)
     except TypeError:
@@ -127,12 +152,12 @@ def _wrap_args_with_refs(args, db):
         if _is_byref(value):
             native_ref = _make_native_reference(value, db)
             if native_ref is None:
-                wrapped_args.append(_wrap_value(value.value))
+                wrapped_args.append(_wrap_value(value.value, db))
             else:
                 wrapped_args.append(native_ref)
                 refs.append((value, native_ref))
         else:
-            wrapped_args.append(_wrap_value(value))
+            wrapped_args.append(_wrap_value(value, db))
 
     return wrapped_args, refs
 
@@ -247,8 +272,7 @@ class NativeObjectProxy:
             return
         
         # FIX: Unwrap proxy payload before sending to IRIS
-        if isinstance(value, NativeObjectProxy):
-            value = value._oref
-        
+        value = _wrap_value(value, self._db)
+
         mapped_name = name.replace("_", "%", 1) if name.startswith("_") else name
         self._oref.set(mapped_name, value)

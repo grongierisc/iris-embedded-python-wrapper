@@ -67,6 +67,7 @@ def test_driver_loader_rebinds_wrapper_symbols(monkeypatch):
     iris_ep_module.runtime = Runtime()
     iris_ep_module.dbapi = "dbapi"
     iris_ep_module.cls = "cls"
+    iris_ep_module.IRISList = "IRISList"
 
     monkeypatch.setitem(sys.modules, "iris_ep", iris_ep_module)
 
@@ -80,6 +81,7 @@ def test_driver_loader_rebinds_wrapper_symbols(monkeypatch):
     assert module_globals["runtime"] is iris_ep_module.runtime
     assert module_globals["dbapi"] == "dbapi"
     assert module_globals["cls"] == "cls"
+    assert module_globals["IRISList"] == "IRISList"
 
 
 def test_driver_loader_does_not_bind_wrapper_connect_as_native_driver(monkeypatch):

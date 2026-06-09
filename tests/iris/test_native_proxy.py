@@ -265,6 +265,47 @@ def test_native_proxy_converts_vector_method_args():
     assert db.invoked_methods[-1] == ("Instance", "VectorArg", ("1,2,3",))
 
 
+def test_native_proxy_converts_iris_list_method_args():
+    db = MockIRISNativeConnection()
+    payload = iris.IRISList([1, "two"])
+
+    iris.runtime.configure(mode="native", iris=db)
+
+    try:
+        iris.cls("User.Bar").ListArg(payload)
+        obj = iris.cls("User.Bar")._OpenId(1)
+        obj.ListArg(payload)
+    finally:
+        iris.runtime.reset()
+
+    class_arg = db.invoked_methods[-3][2][0]
+    instance_arg = db.invoked_methods[-1][2][0]
+
+    assert db.invoked_methods[-3][:2] == ("User.Bar", "ListArg")
+    assert db.invoked_methods[-1][:2] == ("Instance", "ListArg")
+    assert class_arg is not payload
+    assert instance_arg is not payload
+    assert class_arg.__class__.__name__ == "IRISList"
+    assert instance_arg.__class__.__name__ == "IRISList"
+    assert class_arg.getBuffer() == payload.getBuffer()
+    assert instance_arg.getBuffer() == payload.getBuffer()
+
+
+def test_native_proxy_rejects_iris_list_byref_copyback():
+    db = MockIRISNativeConnection()
+    ref = iris.ByRef(iris.IRISList([1, "two"]), iris.IRISList)
+
+    iris.runtime.configure(mode="native", iris=db)
+
+    try:
+        with pytest.raises(RuntimeError, match="Native ByRef IRISList"):
+            iris.cls("User.Bar").ListArg(ref)
+    finally:
+        iris.runtime.reset()
+
+    assert db.invoked_methods == []
+
+
 def test_vector_operations_do_not_use_native_runtime_bridge():
     db = MockIRISNativeConnection()
 

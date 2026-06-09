@@ -132,6 +132,7 @@ def test_public_byref_helper(monkeypatch):
     assert iris.ByRef is public_iris.ByRef
     assert not hasattr(iris.dbapi, "ByRef")
     assert not hasattr(iris.dbapi, "make_ref")
+    assert not hasattr(iris.dbapi, "IRISList")
     assert not hasattr(iris.dbapi, "IRISVector")
     assert not hasattr(iris.dbapi, "Vector")
 
@@ -175,6 +176,36 @@ def test_dbapi_vector_normalizes_as_embedded_param():
     assert embedded_dbapi._normalize_embedded_params((vector,)) == ("1,2.5,3.0",)
     assert embedded_dbapi._normalize_embedded_params({"v": vector}) == {
         "v": "1,2.5,3.0"
+    }
+
+
+def test_dbapi_iris_list_normalizes_as_embedded_param():
+    assert iris.IRISList is public_iris.IRISList
+    assert not hasattr(iris.dbapi, "IRISList")
+
+    payload = public_iris.IRISList([1, "two", Decimal("3.5"), None])
+    payload_bytes = payload.to_param()
+
+    assert isinstance(payload, public_iris.IRISList)
+    assert len(payload) == 4
+    assert payload.count() == 4
+    assert payload[0] == 1
+    assert payload[-1] is None
+    assert list(payload) == [1, "two", Decimal("3.5"), None]
+    assert isinstance(payload_bytes, bytes)
+
+    copy = public_iris.IRISList.from_db(payload_bytes)
+    assert copy == payload
+    assert list(copy) == [1, "two", Decimal("3.5"), None]
+
+    nested = public_iris.IRISList([payload])
+    nested_value = nested.getIRISList(1)
+    assert isinstance(nested_value, public_iris.IRISList)
+    assert list(nested_value) == [1, "two", Decimal("3.5"), None]
+
+    assert embedded_dbapi._normalize_embedded_params((payload,)) == (payload_bytes,)
+    assert embedded_dbapi._normalize_embedded_params({"payload": payload}) == {
+        "payload": payload_bytes
     }
 
 
@@ -544,6 +575,48 @@ def test_dbapi_embedded_fetches_vector_values_with_getrow(monkeypatch):
     cur.execute("select id, name, embedding from Demo")
 
     assert cur.fetchone() == (1, "row one", "1,2,3")
+
+
+def test_dbapi_embedded_fetches_list_values_from_metadata(monkeypatch):
+    payload = public_iris.IRISList([1, "two", Decimal("3.5")])
+    raw_payload = payload.to_param().decode("latin-1")
+    fake_statement = FakeVectorStatement(
+        [(1, raw_payload)],
+        [
+            FakeMetadataColumn("id", client_type=5),
+            FakeMetadataColumn(
+                "payload",
+                client_type=10,
+                runtime_type="%Library.List",
+                sql_category="LIST",
+            ),
+        ],
+    )
+
+    def fake_cls(name):
+        assert name == "%SQL.Statement"
+        return FakeStatementFactory(fake_statement)
+
+    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
+    monkeypatch.setattr(
+        _iris_ep.dbapi._runtime_manager,
+        "get",
+        lambda: types.SimpleNamespace(
+            embedded_available=True,
+            state="embedded-kernel",
+            dbapi=None,
+        ),
+    )
+
+    conn = iris.dbapi.connect(mode="embedded")
+    cur = conn.cursor()
+
+    cur.execute("select id, payload from Demo")
+    row = cur.fetchone()
+
+    assert row[0] == 1
+    assert isinstance(row[1], public_iris.IRISList)
+    assert list(row[1]) == [1, "two", Decimal("3.5")]
 
 
 def test_dbapi_embedded_prefers_sql_statement(monkeypatch):

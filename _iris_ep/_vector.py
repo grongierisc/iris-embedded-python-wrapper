@@ -6,7 +6,8 @@ from typing import Any
 from uuid import uuid4
 
 
-_VECTOR_CACHE_GLOBAL = "iris_vector"
+_VECTOR_OPERATION_CACHE_GLOBAL = "iris_vector"
+_VECTOR_DBAPI_CACHE_GLOBAL = "iris_dbapi_vector"
 _IRIS_VECTOR_DTYPES = {
     "int": "integer",
     "integer": "integer",
@@ -253,9 +254,19 @@ def _objectscript_quote(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
 
 
-def _vector_cache_root(cache_key: str) -> str:
+def _vector_cache_subscripts(
+    cache_key: str,
+    cache_global: str = _VECTOR_OPERATION_CACHE_GLOBAL,
+) -> list[str]:
+    return [cache_global, cache_key]
+
+
+def _vector_cache_root(
+    cache_key: str,
+    cache_global: str = _VECTOR_OPERATION_CACHE_GLOBAL,
+) -> str:
     return (
-        f"^CacheTemp({_objectscript_quote(_VECTOR_CACHE_GLOBAL)},"
+        f"^CacheTemp({_objectscript_quote(cache_global)},"
         f"{_objectscript_quote(cache_key)}"
     )
 
@@ -282,6 +293,65 @@ def _iris_vector_to_string_script(var_name: str, out_ref: str) -> str:
     )
 
 
+def _decode_embedded_vector_row_list(
+    row_value: Any,
+    column_count: int,
+    vector_column_indices: tuple[int, ...],
+    cache_key: str,
+    *,
+    cache_global: str = _VECTOR_DBAPI_CACHE_GLOBAL,
+) -> tuple[Any, ...]:
+    if isinstance(row_value, tuple):
+        return row_value
+    if isinstance(row_value, list):
+        return tuple(row_value)
+
+    try:
+        import iris as _iris
+
+        gref = getattr(_iris, "gref")
+        execute = getattr(_iris, "execute")
+    except Exception as exc:
+        raise RuntimeError(
+            "Embedded VECTOR decoding requires iris.gref and iris.execute"
+        ) from exc
+
+    cache = gref("^CacheTemp")
+    cache_subscripts = _vector_cache_subscripts(cache_key, cache_global)
+    root = _vector_cache_root(cache_key, cache_global)
+    row_ref = f'{root},"row")'
+    out_base = f'{root},"out")'
+    out_i = f'{root},"out",i)'
+
+    try:
+        cache.set(cache_subscripts + ["row"], row_value)
+        execute(
+            f"set row={row_ref} "
+            f"kill {out_base} "
+            f"for i=1:1:{column_count} set {out_i}=$listget(row,i)"
+        )
+        for index in vector_column_indices:
+            out_col = f'{root},"out",{index})'
+            execute(
+                f"set row={row_ref},raw=$listget(row,{index}),{out_col}=raw "
+                f"if raw'=\"\",$isvector(raw) "
+                f"set out=\"\",{out_col}=\"\" "
+                f"for j=1:1:$vectorop(\"length\",raw) "
+                f"set out=out_$select(j=1:\"\",1:\",\")_$vector(raw,j) "
+                f"set {out_col}=out"
+            )
+
+        values = []
+        for index in range(1, column_count + 1):
+            values.append(cache.get(cache_subscripts + ["out", index]))
+        return tuple(values)
+    finally:
+        try:
+            cache.kill(cache_subscripts)
+        except Exception:
+            pass
+
+
 def _execute_iris_vector_operation(
     operation: str,
     left: IRISVector,
@@ -301,7 +371,7 @@ def _execute_iris_vector_operation(
 
     cache_key = uuid4().hex
     cache = gref("^CacheTemp")
-    cache_subscripts = [_VECTOR_CACHE_GLOBAL, cache_key]
+    cache_subscripts = _vector_cache_subscripts(cache_key)
     root = _vector_cache_root(cache_key)
     left_values_ref = _vector_value_ref(root, "left", "values")
     left_dtype_ref = _vector_value_ref(root, "left", "dtype")

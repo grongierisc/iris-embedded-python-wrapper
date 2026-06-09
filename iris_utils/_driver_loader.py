@@ -84,6 +84,7 @@ def rebind_wrapper_symbols(module_globals):
         "ref",
         "ByRef",
         "make_ref",
+        "IRISList",
         "IRISVector",
         "Vector",
     ):

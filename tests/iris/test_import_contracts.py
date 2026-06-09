@@ -60,11 +60,13 @@ def test_import_iris_contract_from_outside_repo(tmp_path):
         assert hasattr(iris, "connect")
         assert hasattr(iris, "ByRef")
         assert hasattr(iris, "make_ref")
+        assert hasattr(iris, "IRISList")
         assert hasattr(iris, "IRISVector")
         assert hasattr(iris, "Vector")
         assert iris.Vector is iris.IRISVector
         assert not hasattr(iris.dbapi, "ByRef")
         assert not hasattr(iris.dbapi, "make_ref")
+        assert not hasattr(iris.dbapi, "IRISList")
         assert not hasattr(iris.dbapi, "IRISVector")
         assert not hasattr(iris.dbapi, "Vector")
         assert not hasattr(iris_ep, "_original_cls")

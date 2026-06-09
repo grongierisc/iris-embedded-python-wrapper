@@ -6,6 +6,7 @@ _logging.basicConfig(level=_logging.INFO)
 from . import _bootstrap
 from . import iris_ipm
 from ._byref import ByRef, make_ref
+from ._list import IRISList
 from ._vector import IRISVector, Vector
 from .iris_ipm import ipm
 from ._runtime_facade import initialize_module as _initialize_module

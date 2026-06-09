@@ -11,6 +11,7 @@ from iris_utils._module_exports import copy_public_exports
 from . import _bootstrap
 from ._byref import ByRef
 from ._dbapi import make_dbapi
+from ._list import IRISList
 
 _WRAPPER_EXPORTS = {
     "_runtime",
@@ -23,6 +24,7 @@ _WRAPPER_EXPORTS = {
     "ref",
     "ByRef",
     "make_ref",
+    "IRISList",
     "IRISVector",
     "Vector",
 }
@@ -337,6 +339,7 @@ class RuntimeFacade:
             "ref",
             "ByRef",
             "make_ref",
+            "IRISList",
             "IRISVector",
             "Vector",
         ):
@@ -405,6 +408,7 @@ class RuntimeFacade:
                 "ref",
                 "ByRef",
                 "make_ref",
+                "IRISList",
                 "IRISVector",
                 "Vector",
             )

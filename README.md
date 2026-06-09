@@ -445,6 +445,67 @@ This works for embedded calls and for remote/native bridge calls. In native
 mode, the bridge maps `ByRef` to the official Native API reference type for
 class and instance methods.
 
+##### IRISList
+
+`iris.IRISList(values)` is a Python value wrapper for IRIS `$LIST` data. It
+can be built from Python iterables, existing driver `IRISList` objects, or raw
+`$LIST` bytes. `len(payload)`, indexing, and iteration use the list item count;
+`payload.size()` keeps the native driver meaning and returns the encoded byte
+length.
+
+```python
+from decimal import Decimal
+import iris
+
+payload = iris.IRISList([1, "two", Decimal("3.5")])
+raw = payload.to_param()      # $LIST bytes, same as payload.getBuffer()
+copy = iris.IRISList.from_db(raw)
+
+assert list(copy) == [1, "two", Decimal("3.5")]
+```
+
+`IRISList` also behaves like a mutable Python sequence for common operations:
+
+```python
+payload = iris.IRISList([1, "two"])
+payload.append("three")
+payload[1] = "dos"
+payload.extend(["four", "five"])
+
+assert payload[0] == 1
+assert payload.pop() == "five"
+assert payload == [1, "dos", "three", "four"]
+```
+
+Python sequence operations (`payload[0]`, `payload.insert(0, value)`,
+`payload.pop(0)`, `del payload[0]`) are zero-based. The native-style methods
+`add`, `set`, `get`, `getIRISList`, and `remove` keep the driver's one-based
+IRIS indexing and return values.
+
+Embedded DB-API binds `iris.IRISList` parameters as `$LIST` bytes and returns
+`iris.IRISList` for result columns whose metadata is `%List` / `%Library.List`:
+
+```python
+cur.execute("CREATE TABLE Demo.ListTable (id INTEGER, payload %List)")
+cur.execute(
+	"INSERT INTO Demo.ListTable (id, payload) VALUES (?, ?)",
+	(1, iris.IRISList([1, "two", Decimal("3.5")])),
+)
+
+cur.execute("SELECT payload FROM Demo.ListTable WHERE id = ?", (1,))
+fetched = cur.fetchone()[0]
+
+assert isinstance(fetched, iris.IRISList)
+assert list(fetched) == [1, "two", Decimal("3.5")]
+```
+
+The native bridge also accepts `iris.IRISList` for class and instance method
+arguments. In native mode, the bridge converts it to the active driver's native
+`IRISList` class before dispatch, so ordinary Python lists are left unchanged
+and only explicit `IRISList` values are marshaled as IRIS `$LIST`. Native
+`ByRef` copy-back for `IRISList` is not enabled; the current native reference
+value path cannot reliably materialize list payloads after the call.
+
 ##### Vector
 
 `iris.Vector(values, dtype="decimal")` is a Python value wrapper for IRIS SQL

@@ -14,7 +14,8 @@ from ._dbapi_exceptions import (
     InterfaceError,
     OperationalError,
 )
-from ._vector import IRISVector
+from ._list import IRISList
+from ._vector import IRISVector, _decode_embedded_vector_row_list
 
 _VALID_ISOLATION_LEVELS = frozenset({
     "READ UNCOMMITTED",
@@ -34,7 +35,6 @@ _IRIS_STREAM_CLASS_NAMES = frozenset(
     }
 )
 _NOT_IRIS_STREAM = object()
-_VECTOR_CACHE_GLOBAL = "iris_dbapi_vector"
 
 
 def _safe_getattr(value: Any, name: str, default: Any = None):
@@ -155,75 +155,11 @@ _EmbeddedByRef = ByRef
 _make_embedded_ref = make_ref
 
 
-def _objectscript_quote(value: str) -> str:
-    return '"' + value.replace('"', '""') + '"'
-
-
-def _vector_cache_root(cache_key: str) -> str:
-    return (
-        f"^CacheTemp({_objectscript_quote(_VECTOR_CACHE_GLOBAL)},"
-        f"{_objectscript_quote(cache_key)}"
-    )
-
-
-def _decode_embedded_row_list(
-    row_value: Any,
-    column_count: int,
-    vector_column_indices: tuple[int, ...],
-    cache_key: str,
-) -> tuple[Any, ...]:
-    if isinstance(row_value, tuple):
-        return row_value
-    if isinstance(row_value, list):
-        return tuple(row_value)
-
-    try:
-        import iris as _iris
-
-        gref = getattr(_iris, "gref")
-        execute = getattr(_iris, "execute")
-    except Exception as exc:
-        raise InterfaceError("Embedded VECTOR decoding requires iris.gref and iris.execute") from exc
-
-    cache = gref("^CacheTemp")
-    cache_subscripts = [_VECTOR_CACHE_GLOBAL, cache_key]
-    root = _vector_cache_root(cache_key)
-    row_ref = f'{root},"row")'
-    out_base = f'{root},"out")'
-    out_i = f'{root},"out",i)'
-
-    try:
-        cache.set(cache_subscripts + ["row"], row_value)
-        execute(
-            f"set row={row_ref} "
-            f"kill {out_base} "
-            f"for i=1:1:{column_count} set {out_i}=$listget(row,i)"
-        )
-        for index in vector_column_indices:
-            out_col = f'{root},"out",{index})'
-            execute(
-                f"set row={row_ref},raw=$listget(row,{index}),{out_col}=raw "
-                f"if raw'=\"\",$isvector(raw) "
-                f"set out=\"\",{out_col}=\"\" "
-                f"for j=1:1:$vectorop(\"length\",raw) "
-                f"set out=out_$select(j=1:\"\",1:\",\")_$vector(raw,j) "
-                f"set {out_col}=out"
-            )
-
-        values = []
-        for index in range(1, column_count + 1):
-            values.append(cache.get(cache_subscripts + ["out", index]))
-        return tuple(values)
-    finally:
-        try:
-            cache.kill(cache_subscripts)
-        except Exception:
-            pass
-
-
 def _normalize_embedded_param_value(value: Any):
     if value is None:
         return ""
+    if isinstance(value, IRISList):
+        return value.to_param()
     if isinstance(value, IRISVector):
         return value.to_param()
     if isinstance(value, bool):
@@ -242,6 +178,8 @@ def _normalize_embedded_param_value(value: Any):
 def _embedded_param_needs_normalization(value: Any) -> bool:
     if value is None:
         return True
+    if isinstance(value, IRISList):
+        return True
     if isinstance(value, IRISVector):
         return True
     value_type = type(value)
@@ -257,7 +195,7 @@ def _embedded_param_needs_normalization(value: Any) -> bool:
 
 
 def _normalize_embedded_params(params: Any):
-    if isinstance(params, IRISVector):
+    if isinstance(params, (IRISList, IRISVector)):
         return _normalize_embedded_param_value(params)
     if isinstance(params, dict):
         normalized = None
@@ -383,6 +321,12 @@ def _binary_result_processor(value: Any):
     return bytes(value)
 
 
+def _list_result_processor(value: Any):
+    if value is None or value == "":
+        return None
+    return IRISList.from_db(value)
+
+
 def _integer_result_processor(value: Any):
     if value is None or isinstance(value, int):
         return value
@@ -415,6 +359,29 @@ def _is_vector_metadata_column(column: Any) -> bool:
 
         try:
             if getattr(metadata_object, "SqlCategory") == "VECTOR":
+                return True
+        except Exception:
+            pass
+
+    return False
+
+
+def _is_list_metadata_column(column: Any) -> bool:
+    for attr_name in ("property", "typeClass"):
+        try:
+            metadata_object = getattr(column, attr_name)
+        except Exception:
+            continue
+
+        for type_attr in ("RuntimeType", "Type", "Name"):
+            try:
+                if getattr(metadata_object, type_attr) in ("%Library.List", "%List"):
+                    return True
+            except Exception:
+                pass
+
+        try:
+            if getattr(metadata_object, "SqlCategory") == "LIST":
                 return True
         except Exception:
             pass
@@ -481,6 +448,8 @@ def _get_result_processors(
 
         if column is not None and _is_vector_result_column(column):
             processors.append(_vector_result_processor)
+        elif column is not None and _is_list_metadata_column(column):
+            processors.append(_list_result_processor)
         elif client_type == 1:
             processors.append(_binary_result_processor)
         elif client_type in (5, 16, 18):
@@ -560,12 +529,15 @@ class _StatementResultIterator:
         if self._column_count is None:
             raise InterfaceError("Unsupported %SQL.Statement VECTOR result object")
 
-        row = _decode_embedded_row_list(
-            row_ref.value,
-            self._column_count,
-            self._vector_column_indices,
-            self._vector_cache_key,
-        )
+        try:
+            row = _decode_embedded_vector_row_list(
+                row_ref.value,
+                self._column_count,
+                self._vector_column_indices,
+                self._vector_cache_key,
+            )
+        except RuntimeError as exc:
+            raise InterfaceError(str(exc)) from exc
         processors = self._processors
         if processors is not None:
             return tuple(processor(value) for processor, value in zip(processors, row))
