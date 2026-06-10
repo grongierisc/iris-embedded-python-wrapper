@@ -112,7 +112,7 @@ def test_import_iris_without_install_dir_does_not_probe_pythonint(tmp_path):
     assert "NO_PYTHONINT_PROBE_OK" in result.stdout
 
 
-def test_sitecustomize_patches_preloaded_iris_in_embedded_kernel(tmp_path):
+def test_sitehook_patches_preloaded_iris_in_embedded_kernel(tmp_path):
     result = _fresh_python(
         """
         import sys
@@ -136,8 +136,8 @@ def test_sitecustomize_patches_preloaded_iris_in_embedded_kernel(tmp_path):
         irisep.cls = fake_cls
         sys.modules["irisep"] = irisep
 
-        import sitecustomize
-        assert sitecustomize._patch_preloaded_iris()
+        import _iris_ep_sitehook as sitehook
+        assert sitehook._patch_preloaded_iris()
 
         import iris
         assert iris is preloaded_iris
@@ -153,7 +153,7 @@ def test_sitecustomize_patches_preloaded_iris_in_embedded_kernel(tmp_path):
     assert "SITECUSTOMIZE_PRELOADED_IRIS_OK" in result.stdout
 
 
-def test_sitecustomize_patches_preloaded_iris_without_irisep(tmp_path):
+def test_sitehook_patches_preloaded_iris_without_irisep(tmp_path):
     result = _fresh_python(
         """
         import sys
@@ -175,8 +175,8 @@ def test_sitecustomize_patches_preloaded_iris_without_irisep(tmp_path):
         sys.modules["iris"] = preloaded_iris
         sys.modules.pop("irisep", None)
 
-        import sitecustomize
-        assert sitecustomize._patch_preloaded_iris()
+        import _iris_ep_sitehook as sitehook
+        assert sitehook._patch_preloaded_iris()
 
         import iris
         assert iris is preloaded_iris
@@ -261,3 +261,161 @@ def test_native_dbapi_import_contract_preserves_wrapper_parent(tmp_path):
 
     _assert_fresh_python_ok(result)
     assert "NATIVE_DBAPI_CONTRACT_OK" in result.stdout
+
+
+def test_install_in_package_runtime_returns_wrapper_facade(tmp_path):
+    result = _fresh_python(
+        """
+        import sys
+        import iris_ep
+
+        installed = iris_ep.install()
+
+        import iris
+        assert installed is iris
+        assert sys.modules["iris"] is iris
+        assert hasattr(iris, "dbapi")
+        assert hasattr(iris, "runtime")
+        assert hasattr(iris, "cls")
+        assert hasattr(iris, "connect")
+        assert getattr(iris, "__iris_ep_installed__", False) is True
+        assert iris.runtime is iris_ep.runtime
+        print("INSTALL_PACKAGE_RUNTIME_OK")
+        """,
+        tmp_path,
+    )
+
+    _assert_fresh_python_ok(result)
+    assert "INSTALL_PACKAGE_RUNTIME_OK" in result.stdout
+
+
+def test_install_is_idempotent_and_force_reruns(tmp_path):
+    result = _fresh_python(
+        """
+        import iris_ep
+
+        first = iris_ep.install()
+        assert getattr(first, "__iris_ep_installed__", False) is True
+
+        # Second call is a cheap no-op returning the same module.
+        second = iris_ep.install()
+        assert second is first
+
+        # force=True re-runs patching and still returns the same module.
+        forced = iris_ep.install(force=True)
+        assert forced is first
+        print("INSTALL_IDEMPOTENT_OK")
+        """,
+        tmp_path,
+    )
+
+    _assert_fresh_python_ok(result)
+    assert "INSTALL_IDEMPOTENT_OK" in result.stdout
+
+
+def test_install_explicit_patches_preloaded_iris_in_embedded_kernel(tmp_path):
+    result = _fresh_python(
+        """
+        import sys
+        import types
+
+        preloaded_iris = types.ModuleType("iris")
+        preloaded_iris.cls = lambda class_name: {"preloaded": class_name}
+        sys.modules["iris"] = preloaded_iris
+
+        class FakeVersion:
+            @staticmethod
+            def GetVersion():
+                return "IRIS fake kernel version"
+
+        def fake_cls(class_name):
+            if class_name == "%SYSTEM.Version":
+                return FakeVersion
+            return {"class": class_name}
+
+        irisep = types.ModuleType("irisep")
+        irisep.cls = fake_cls
+        sys.modules["irisep"] = irisep
+
+        import iris_ep
+        installed = iris_ep.install()
+
+        import iris
+        assert installed is iris
+        assert iris is preloaded_iris
+        assert iris.runtime.state == "embedded-kernel"
+        assert iris.cls("%SYSTEM.Version").GetVersion() == "IRIS fake kernel version"
+        assert iris.system.Version.GetVersion() == "IRIS fake kernel version"
+        assert getattr(iris, "__iris_ep_installed__", False) is True
+        print("INSTALL_PRELOADED_IRIS_OK")
+        """,
+        tmp_path,
+    )
+
+    _assert_fresh_python_ok(result)
+    assert "INSTALL_PRELOADED_IRIS_OK" in result.stdout
+
+
+def test_pth_import_line_triggers_auto_install(tmp_path):
+    pth_line = (REPO_ROOT / "iris_ep.pth").read_text().strip()
+    assert pth_line.startswith("import "), pth_line
+
+    result = _fresh_python(
+        f"""
+        import sys
+        import types
+
+        preloaded_iris = types.ModuleType("iris")
+        preloaded_iris.cls = lambda class_name: {{"preloaded": class_name}}
+        sys.modules["iris"] = preloaded_iris
+
+        class FakeVersion:
+            @staticmethod
+            def GetVersion():
+                return "IRIS fake kernel version"
+
+        def fake_cls(class_name):
+            if class_name == "%SYSTEM.Version":
+                return FakeVersion
+            return {{"class": class_name}}
+
+        irisep = types.ModuleType("irisep")
+        irisep.cls = fake_cls
+        sys.modules["irisep"] = irisep
+
+        # Execute the .pth import-line exactly as site.py would at startup.
+        exec({pth_line!r})
+
+        import iris
+        assert iris is preloaded_iris
+        assert iris.runtime.state == "embedded-kernel"
+        assert iris.cls("%SYSTEM.Version").GetVersion() == "IRIS fake kernel version"
+        print("PTH_AUTO_INSTALL_OK")
+        """,
+        tmp_path,
+    )
+
+    _assert_fresh_python_ok(result)
+    assert "PTH_AUTO_INSTALL_OK" in result.stdout
+
+
+def test_pth_import_line_is_noop_outside_embedded_kernel(tmp_path):
+    pth_line = (REPO_ROOT / "iris_ep.pth").read_text().strip()
+
+    result = _fresh_python(
+        f"""
+        import sys
+
+        # No preloaded built-in iris: not an embedded kernel.
+        assert "iris" not in sys.modules
+        exec({pth_line!r})
+
+        # auto_install must not import the heavy wrapper or a wrong iris module.
+        assert sys.modules.get("iris") is None
+        print("PTH_NOOP_OK")
+        """,
+        tmp_path,
+    )
+
+    _assert_fresh_python_ok(result)
+    assert "PTH_NOOP_OK" in result.stdout

@@ -252,6 +252,35 @@ In `embedded-local`, configure the IRIS install directory and loader path before
 starting Python, or provide the install directory at runtime with
 `iris.connect(path=...)` as described below.
 
+#### Making `import iris` return the wrapper in `embedded-kernel`
+
+In `embedded-kernel`, IRIS preloads a built-in `iris` module into `sys.modules`
+before any user code runs. A later `import iris` returns that built-in module and
+never consults `sys.path`, so the wrapper facade (`dbapi`, `runtime`, `connect`,
+`system`, ...) would be missing. The wrapper installs its facade onto the
+preloaded module through one of three mechanisms:
+
+- `iris_ep.pth` startup trigger (preferred): a `.pth` import-line that runs at
+  interpreter startup. Unlike `sitecustomize`, multiple `.pth` import-lines
+  coexist, so it does not collide with other packages. Placement depends on the
+  install layout (it must land in a processed `site-packages` directory).
+- `sitecustomize` (fallback): a process-wide singleton kept for environments
+  where the `.pth` file is not processed. Only the first `sitecustomize` on
+  `sys.path` runs, so prefer the `.pth` trigger or the explicit API below.
+- `iris_ep.install()` (explicit): call it before using `iris` when you do not
+  want to rely on startup magic. It is idempotent and safe in every runtime, and
+  returns the patched `iris` module:
+
+  ```python
+  import iris_ep
+  iris = iris_ep.install()
+  iris.dbapi  # facade is present
+  ```
+
+All three paths are idempotent and delegate to the same logic, so combining them
+is harmless. In `embedded-local` and `native-remote` runtimes, a normal
+`import iris` already returns the wrapper, so no startup trigger is required.
+
 #### Runtime model
 
 - `iris.runtime.mode`: selected policy (`auto`, `embedded`, `native`)

@@ -1,0 +1,1 @@
+import _iris_ep_sitehook; _iris_ep_sitehook.auto_install()

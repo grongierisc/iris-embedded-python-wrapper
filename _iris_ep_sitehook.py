@@ -1,22 +1,42 @@
-"""
-Patch the preloaded IRIS embedded Python module when this package is on sys.path.
+"""Shared startup hook and explicit installer for the IRIS wrapper facade.
 
 InterSystems IRIS starts embedded Python with a built-in ``iris`` module already
-present in ``sys.modules``.  In that situation a later ``import iris`` cannot
-load the wrapper package from PYTHONPATH or site-packages.  Python imports
-``sitecustomize`` during startup, so this small guarded hook installs the
-wrapper facade onto the preloaded module before user code runs.
+present in ``sys.modules``.  In that ``embedded-kernel`` situation a later
+``import iris`` returns the built-in module and never consults ``sys.path``, so
+the wrapper facade (``dbapi``, ``runtime``, ``connect``, ``system``...) would be
+missing.
+
+This module exposes two entry points that patch the live ``iris`` module:
+
+``install(force=False)``
+    Explicit, idempotent, testable API for application code.  Safe to call from
+    any runtime.  Returns the patched ``iris`` module.
+
+``auto_install()``
+    Guarded, exception-swallowing entry point used by startup triggers
+    (the ``iris_ep.pth`` import-line and the legacy ``sitecustomize`` module).
+    It only acts in the embedded-kernel runtime and is a cheap no-op otherwise.
+
+This module is intentionally lightweight: importing it must not import the heavy
+``_iris_ep`` package.  The wrapper is only imported lazily, inside the functions,
+and only when a preloaded built-in ``iris`` module is detected.
 """
 
 from __future__ import annotations
 
+import logging
 import sys
 import warnings
 from importlib import import_module
 
 
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
+
+
 _PUBLIC_WRAPPER_NAMES = ("runtime", "dbapi", "cls", "connect", "system")
 _WRAPPER_MODULE_NAMES = ("iris_ep", "_iris_ep")
+_INSTALLED_SENTINEL = "__iris_ep_installed__"
 
 
 def _clear_failed_wrapper_import() -> None:
@@ -129,11 +149,56 @@ def _patch_preloaded_iris() -> bool:
     return True
 
 
-try:
+def install(*, force: bool = False):
+    """Patch the live ``iris`` module with the wrapper facade.
+
+    Idempotent and safe to call from any runtime (embedded-kernel,
+    embedded-local, native-remote).  Returns the patched ``iris`` module.
+
+    With ``force=False`` (the default), a previously completed install is a
+    cheap no-op.  Pass ``force=True`` to re-run patching even if it already
+    happened.
+    """
+    iris_mod = sys.modules.get("iris")
+    if not force and getattr(iris_mod, _INSTALLED_SENTINEL, False):
+        return iris_mod
+
+    # Importing the wrapper builds/refreshes the facade.  In the package
+    # runtimes (embedded-local / native-remote) this also patches an already
+    # imported ``iris`` package via the facade's sync step.
+    import_module("iris_ep")
+
+    # In embedded-kernel a built-in ``iris`` is preloaded; patch it in place.
     _patch_preloaded_iris()
-except Exception as exc:  # pragma: no cover - startup robustness guard
-    warnings.warn(
-        f"iris-embedded-python-wrapper could not patch the preloaded iris module: {exc}",
-        RuntimeWarning,
-        stacklevel=2,
-    )
+
+    iris_mod = sys.modules.get("iris")
+    if iris_mod is None:
+        # No ``iris`` imported yet outside a kernel: make the wrapper importable
+        # as ``iris`` so the caller's next ``import iris`` resolves to it.
+        iris_mod = import_module("iris")
+
+    if iris_mod is not None:
+        try:
+            setattr(iris_mod, _INSTALLED_SENTINEL, True)
+        except Exception as exc:  # pragma: no cover - read-only module guard
+            logger.debug("Could not mark iris module as installed: %s", exc)
+
+    return iris_mod
+
+
+def auto_install() -> bool:
+    """Guarded startup-hook entry point.
+
+    Only acts in the embedded-kernel runtime; a cheap no-op elsewhere.  Never
+    raises: any failure is downgraded to a ``RuntimeWarning`` so it cannot break
+    interpreter startup.
+    """
+    try:
+        return _patch_preloaded_iris()
+    except Exception as exc:  # pragma: no cover - startup robustness guard
+        warnings.warn(
+            f"iris-embedded-python-wrapper could not patch the preloaded iris module: {exc}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return False
