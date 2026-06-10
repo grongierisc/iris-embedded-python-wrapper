@@ -13,6 +13,8 @@ from ._byref import ByRef
 from ._dbapi import make_dbapi
 from ._list import IRISList
 
+_logger = logging.getLogger(__name__)
+
 _WRAPPER_EXPORTS = {
     "_runtime",
     "runtime",
@@ -72,7 +74,7 @@ def install_unavailable_getattr(module_globals: dict[str, Any], module_name: str
         if current_runtime.iris is not None:
             raise AttributeError(f"module '{module_name}' has no attribute '{name}'")
 
-        logging.warning(
+        _logger.warning(
             "Class or module '%s' not found in iris_embedded_python. "
             "Returning a mock object. Make sure you local installation is correct.",
             name,
@@ -260,8 +262,8 @@ class RuntimeFacade:
             return
 
         if installdir is None:
-            logging.warning("IRISINSTALLDIR or ISC_PACKAGE_INSTALLDIR environment variable is not set")
-            logging.warning("Embedded Python not configured; call iris.connect(path=...) to configure it")
+            _logger.warning("IRISINSTALLDIR or ISC_PACKAGE_INSTALLDIR environment variable is not set")
+            _logger.warning("Embedded Python not configured; call iris.connect(path=...) to configure it")
         else:
             _bootstrap.configure_install_dir(
                 installdir,
@@ -279,8 +281,8 @@ class RuntimeFacade:
         try:
             module = _bootstrap.import_pythonint_module(pythonint_module_name)
         except ImportError as exc:
-            logging.warning("Error importing %s: %s", pythonint_module_name, exc)
-            logging.warning("Embedded Python not available")
+            _logger.warning("Error importing %s: %s", pythonint_module_name, exc)
+            _logger.warning("Embedded Python not available")
             install_unavailable_getattr(self.module_globals, self.module_name)
             return
 
@@ -576,7 +578,7 @@ class RuntimeFacade:
                 return embedded_cls(class_name)
         if current_runtime.iris is not None:
             return NativeClassProxy(class_name, current_runtime.iris)
-        logging.warning("No Embedded Python or Native API connection available.")
+        _logger.warning("No Embedded Python or Native API connection available.")
         from unittest.mock import MagicMock
         return MagicMock()
 

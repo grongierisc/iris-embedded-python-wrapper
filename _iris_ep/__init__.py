@@ -1,7 +1,7 @@
 import logging as _logging
 import os as _os
 
-_logging.basicConfig(level=_logging.INFO)
+_logging.getLogger(__name__).addHandler(_logging.NullHandler())
 
 from . import _bootstrap
 from . import iris_ipm

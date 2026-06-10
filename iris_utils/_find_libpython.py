@@ -8,9 +8,8 @@ import functools
 import sysconfig
 import ctypes.util
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
 
 is_windows = os.name == "nt"
 is_apple = sys.platform == "darwin"
