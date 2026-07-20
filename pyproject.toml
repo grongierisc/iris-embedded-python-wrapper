@@ -28,14 +28,13 @@ classifiers = [
 dependencies = [
     "intersystems-irispython>=5.0.0"
 ]
+license = { file = "LICENSE" }
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7",
     "ruff>=0.6",
 ]
-
-license = { file = "LICENSE" }
 
 [project.urls]
 homepage = "https://github.com/grongierisc/iris-embedded-python-wrapper"
