@@ -71,24 +71,6 @@ class FakeStatementResultGetDataOnly:
         return self._column_count
 
 
-class FakeStatementResultAttrOnly:
-    def __init__(self, rows, columns):
-        self._rows = rows
-        self._columns = columns
-        self._index = -1
-
-    def _Next(self):
-        self._index += 1
-        if self._index >= len(self._rows):
-            return False
-
-        row = self._rows[self._index]
-        for name, value in zip(self._columns, row):
-            setattr(self, name, value)
-            setattr(self, name.upper(), value)
-        return True
-
-
 class FakeStatement:
     def __init__(self, rows):
         self.rows = rows
@@ -125,17 +107,6 @@ class FakeStatementGetDataOnly(FakeStatement):
         self.execute_args = args
         self.execute_kwargs = kwargs
         return FakeStatementResultGetDataOnly(self.rows)
-
-
-class FakeStatementAttrOnly(FakeStatement):
-    def __init__(self, rows, columns):
-        super().__init__(rows)
-        self.columns = columns
-
-    def _Execute(self, *args, **kwargs):
-        self.execute_args = args
-        self.execute_kwargs = kwargs
-        return FakeStatementResultAttrOnly(self.rows, self.columns)
 
 
 class FakeStatementFactory:

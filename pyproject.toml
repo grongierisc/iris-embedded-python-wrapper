@@ -3,7 +3,7 @@ requires = ["setuptools", "wheel"]
 
 [project]
 name = "iris-embedded-python-wrapper"
-version = "0.6.1b1"
+version = "0.6.1b2"
 description = "Wrapper for embedded python on InterSystems IRIS"
 readme = "README.md"
 authors = [
@@ -12,10 +12,11 @@ authors = [
 keywords = ["iris", "intersystems", "python", "embedded"]
 requires-python = ">= 3.8"
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -28,11 +29,17 @@ dependencies = [
     "intersystems-irispython>=5.0.0"
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "ruff>=0.6",
+]
+
 license = { file = "LICENSE" }
 
 [project.urls]
 homepage = "https://github.com/grongierisc/iris-embedded-python-wrapper"
-documentation = "https://github.com/grongierisc/iris-embedded-python-wrapper/blob/master/README.md"
+documentation = "https://github.com/grongierisc/iris-embedded-python-wrapper/blob/main/README.md"
 repository = "https://github.com/grongierisc/iris-embedded-python-wrapper"
 issues = "https://github.com/grongierisc/iris-embedded-python-wrapper/issues"
 
@@ -57,3 +64,7 @@ py-modules = ["iris_ep", "_iris_ep_sitehook"]
 [project.scripts]
 bind_iris = "iris_utils._cli:bind"
 unbind_iris = "iris_utils._cli:unbind"
+
+[tool.ruff]
+target-version = "py38"
+line-length = 100

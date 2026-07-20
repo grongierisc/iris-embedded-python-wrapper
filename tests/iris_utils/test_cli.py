@@ -1,8 +1,12 @@
 from pathlib import Path
+import subprocess
 import sys
 import pytest
 import iris_utils._dynalib as dynalib
 from iris_utils._cli import IrisConfigManager, IrisVersion, PythonConfig, python_version_string
+
+
+_REAL_MERGE_CPF_TO_IRIS = IrisConfigManager._merge_cpf_to_iris
 
 
 @pytest.fixture(autouse=True)
@@ -52,6 +56,69 @@ def test_get_iris_version(mock_env):
     version = manager._get_iris_version()
     assert version.major == 2024
     assert version.minor == 1
+
+
+def test_get_iris_instance_name_uses_checked_argv(mock_env, monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(
+            command, 0, stdout=f"running {mock_env} > IRIS\n"
+        )
+
+    monkeypatch.setattr("iris_utils._cli.subprocess.run", fake_run)
+
+    manager = IrisConfigManager()
+
+    assert manager._get_iris_instance_name() == "IRIS"
+    assert calls == [
+        (
+            ["iris", "all"],
+            {"check": True, "capture_output": True, "text": True},
+        )
+    ]
+
+
+def test_get_iris_instance_name_accepts_2024_3_output(mock_env, monkeypatch):
+    monkeypatch.setattr(
+        "iris_utils._cli.subprocess.run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0, stdout=f"{mock_env}  IRIS\n"
+        ),
+    )
+
+    assert IrisConfigManager()._get_iris_instance_name() == "IRIS"
+
+
+def test_iris_command_failure_is_chained(mock_env, monkeypatch):
+    failure = subprocess.CalledProcessError(1, ["iris", "all"])
+    monkeypatch.setattr(
+        "iris_utils._cli.subprocess.run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(failure),
+    )
+
+    with pytest.raises(RuntimeError, match="IRIS command failed") as excinfo:
+        IrisConfigManager()._get_iris_instance_name()
+
+    assert excinfo.value.__cause__ is failure
+
+
+def test_merge_uses_argument_vector(mock_env, monkeypatch):
+    commands = []
+    manager = IrisConfigManager()
+    monkeypatch.setattr(manager, "_get_iris_instance_name", lambda: "IRIS")
+    monkeypatch.setattr(
+        manager,
+        "_run_iris_command",
+        lambda *args: commands.append(args) or "",
+    )
+
+    _REAL_MERGE_CPF_TO_IRIS(manager)
+
+    assert commands == [
+        ("merge", "IRIS", f"{manager.cpf_path}.{manager._merge_cpf_suffix}")
+    ]
 
 def test_make_backup(mock_env):
     manager = IrisConfigManager()
@@ -114,6 +181,32 @@ def test_old_iris_version(mock_env):
     manager = IrisConfigManager()
     with pytest.raises(RuntimeError, match="IRIS version must be 2024.1 or higher"):
         manager.update_config("/test/lib")
+
+
+def test_python_config_key_scanner_handles_config_and_actions(mock_env):
+    manager = IrisConfigManager()
+    lines = [
+        "PythonPath=/python\n",
+        "PythonRuntimeLibrary=/runtime\n",
+        "PythonRuntimeLibraryVersion=3.11\n",
+    ]
+    actions = [f"ModifyConfig:{line}" for line in lines]
+
+    assert manager._find_config_keys(lines, 5) == {
+        "path": 5,
+        "runtime": 6,
+        "version": 7,
+    }
+    assert manager._find_action_keys(actions, 2) == {
+        "path": 2,
+        "runtime": 3,
+        "version": 4,
+    }
+    assert manager._get_config_keys_values(lines) == {
+        "path": "/python",
+        "runtime": "/runtime",
+        "version": "3.11",
+    }
 
 def test_missing_installdir(monkeypatch):
     monkeypatch.delenv("IRISINSTALLDIR", raising=False)

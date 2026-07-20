@@ -1,4 +1,7 @@
+import json
 import logging
+from collections import OrderedDict
+from threading import RLock
 
 try:
     from _iris_ep._byref import ByRef
@@ -17,53 +20,78 @@ except Exception:  # pragma: no cover - iris_utils can be imported standalone.
     _get_native_iris_list_class = None
 
 
+logger = logging.getLogger(__name__)
+
+_DYNAMIC_CLASSES = {"%Library.DynamicObject", "%Library.DynamicArray"}
+_STREAM_CLASSES = {
+    "%Stream.GlobalBinary",
+    "%Stream.GlobalCharacter",
+    "%Stream.FileBinary",
+    "%Stream.FileCharacter",
+}
+
+
+def _iris_classname(value):
+    if isinstance(value, NativeObjectProxy):
+        return None
+    invoke = getattr(value, "invoke", None)
+    if not callable(invoke):
+        return None
+    try:
+        classname = invoke("%ClassName", 1)
+    except Exception:
+        # Older native drivers are identifiable only by their concrete wrapper
+        # type and may not expose %ClassName for every object.
+        return "" if value.__class__.__name__ == "IRISObject" else None
+    if not isinstance(classname, str):
+        return None
+    if classname and "." not in classname and not classname.startswith("%"):
+        return None
+    return classname
+
+
+def _dynamic_to_python(value, db):
+    stream = db.classMethodValue("%Stream.GlobalCharacter", "%New")
+    value.invoke("%ToJSON", stream)
+    stream.invoke("Rewind")
+    size = stream.get("Size")
+    content = stream.invoke("Read", size) if size and size > 0 else ""
+    return json.loads(content)
+
+
+def _stream_to_python(value, classname):
+    value.invoke("Rewind")
+    size = value.get("Size")
+    if not size:
+        return b"" if "Binary" in classname else ""
+    content = value.invoke("Read", size)
+    if "Binary" in classname and isinstance(content, str):
+        return content.encode("latin1")
+    return content
+
+
 def wrap_result(res, db):
     """
     Wraps the result from Native API if it is an IRISObject.
     Automatically unwraps streams and dynamic objects into Python primitives.
     """
-    if res.__class__.__name__ == 'IRISObject':
-        # 1. Identify the IRIS Class Name
+    classname = _iris_classname(res)
+    if classname is None:
+        return res
+
+    if classname in _DYNAMIC_CLASSES:
         try:
-            classname = res.invoke("%ClassName", 1)
-        except Exception:
-            classname = ""
+            return _dynamic_to_python(res, db)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to deserialize IRIS {classname}") from exc
 
-        # 2. Automatically deserialize %DynamicObject and %DynamicArray to dict/list
-        if classname in ("%Library.DynamicObject", "%Library.DynamicArray"):
-            import json
-            try:
-                # Dump JSON to a temporary stream to read it back natively
-                s = db.classMethodValue("%Stream.GlobalCharacter", "%New")
-                
-                res.invoke("%ToJSON", s)
-                s.invoke("Rewind")
-                size = s.get("Size")
-                content = s.invoke("Read", size) if size and size > 0 else ""
-                
-                return json.loads(content)
-            except Exception:
-                pass # Fallback to proxy if it fails
+    if classname in _STREAM_CLASSES:
+        try:
+            return _stream_to_python(res, classname)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to read IRIS {classname}") from exc
 
-        # 3. Automatically deserialize Streams to bytes/str
-        elif classname in ("%Stream.GlobalBinary", "%Stream.GlobalCharacter", "%Stream.FileBinary", "%Stream.FileCharacter"):
-            try:
-                res.invoke("Rewind")
-                size = res.get("Size")
-                if not size: return b"" if "Binary" in classname else ""
-                content = res.invoke("Read", size)
-                
-                # Native API sometimes parses binary wire payload as strings, encode to bytes
-                if "Binary" in classname and isinstance(content, str):
-                    return content.encode('latin1')
-                return content
-            except Exception:
-                pass # Fallback to proxy if it fails
-
-        # 4. Fallback for all other IRIS objects
-        return NativeObjectProxy(res, db)
-        
-    return res
+    return NativeObjectProxy(res, db)
 
 
 def _is_vector(value):
@@ -190,7 +218,9 @@ class NativeClassProxy:
 
         return method_proxy
 
-_CLASS_PROPERTIES_CACHE = {}
+_CLASS_PROPERTIES_CACHE_MAXSIZE = 256
+_CLASS_PROPERTIES_CACHE = OrderedDict()
+_CLASS_PROPERTIES_CACHE_LOCK = RLock()
 _STRING_PROPERTY_TYPES = {
     "%Library.String",
     "%Library.RawString",
@@ -198,10 +228,28 @@ _STRING_PROPERTY_TYPES = {
     "%RawString",
 }
 
+def _class_properties_cache_key(classname, db):
+    try:
+        state = vars(db)
+    except Exception:
+        state = {}
+    namespace = state.get("_namespace", state.get("namespace"))
+    try:
+        hash(db)
+        connection = db
+    except Exception:
+        connection = id(db)
+    return connection, str(namespace) if namespace is not None else None, classname
+
+
 def _get_class_properties(classname, db):
-    if classname in _CLASS_PROPERTIES_CACHE:
-        return _CLASS_PROPERTIES_CACHE[classname]
-        
+    cache_key = _class_properties_cache_key(classname, db)
+    with _CLASS_PROPERTIES_CACHE_LOCK:
+        cached = _CLASS_PROPERTIES_CACHE.get(cache_key)
+        if cached is not None:
+            _CLASS_PROPERTIES_CACHE.move_to_end(cache_key)
+            return cached
+
     props = {}
     try:
         sql = "SELECT Name, Type, RuntimeType, Collection FROM %Dictionary.CompiledProperty WHERE parent = ?"
@@ -214,9 +262,14 @@ def _get_class_properties(classname, db):
                 "collection": rs.get("Collection"),
             }
     except Exception:
-        pass
-        
-    _CLASS_PROPERTIES_CACHE[classname] = props
+        logger.debug("Unable to probe properties for %s", classname, exc_info=True)
+        return props
+
+    with _CLASS_PROPERTIES_CACHE_LOCK:
+        _CLASS_PROPERTIES_CACHE[cache_key] = props
+        _CLASS_PROPERTIES_CACHE.move_to_end(cache_key)
+        while len(_CLASS_PROPERTIES_CACHE) > _CLASS_PROPERTIES_CACHE_MAXSIZE:
+            _CLASS_PROPERTIES_CACHE.popitem(last=False)
     return props
 
 

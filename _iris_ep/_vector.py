@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from contextlib import contextmanager
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
@@ -275,6 +276,37 @@ def _vector_value_ref(root: str, *names: str) -> str:
     return root + "".join(f",{_objectscript_quote(name)}" for name in names) + ")"
 
 
+@contextmanager
+def _temporary_vector_cache(
+    cache_key: str,
+    cache_global: str,
+    unavailable_message: str,
+):
+    try:
+        import iris as _iris
+
+        gref = getattr(_iris, "gref")
+        execute = getattr(_iris, "execute")
+        cache = gref("^CacheTemp")
+    except Exception as exc:
+        raise RuntimeError(unavailable_message) from exc
+
+    cache_subscripts = _vector_cache_subscripts(cache_key, cache_global)
+    root = _vector_cache_root(cache_key, cache_global)
+    try:
+        yield cache, cache_subscripts, root, execute
+    except BaseException:
+        try:
+            cache.kill(cache_subscripts)
+        except Exception:
+            pass
+        raise
+    else:
+        # A cleanup failure is actionable when there is no primary exception
+        # to preserve, so do not silently discard it.
+        cache.kill(cache_subscripts)
+
+
 def _build_iris_vector_script(var_name: str, value_ref: str, dtype_ref: str) -> str:
     return (
         f"kill {var_name} "
@@ -306,24 +338,14 @@ def _decode_embedded_vector_row_list(
     if isinstance(row_value, list):
         return tuple(row_value)
 
-    try:
-        import iris as _iris
-
-        gref = getattr(_iris, "gref")
-        execute = getattr(_iris, "execute")
-    except Exception as exc:
-        raise RuntimeError(
-            "Embedded VECTOR decoding requires iris.gref and iris.execute"
-        ) from exc
-
-    cache = gref("^CacheTemp")
-    cache_subscripts = _vector_cache_subscripts(cache_key, cache_global)
-    root = _vector_cache_root(cache_key, cache_global)
-    row_ref = f'{root},"row")'
-    out_base = f'{root},"out")'
-    out_i = f'{root},"out",i)'
-
-    try:
+    with _temporary_vector_cache(
+        cache_key,
+        cache_global,
+        "Embedded VECTOR decoding requires iris.gref and iris.execute",
+    ) as (cache, cache_subscripts, root, execute):
+        row_ref = f'{root},"row")'
+        out_base = f'{root},"out")'
+        out_i = f'{root},"out",i)'
         cache.set(cache_subscripts + ["row"], row_value)
         execute(
             f"set row={row_ref} "
@@ -345,11 +367,6 @@ def _decode_embedded_vector_row_list(
         for index in range(1, column_count + 1):
             values.append(cache.get(cache_subscripts + ["out", index]))
         return tuple(values)
-    finally:
-        try:
-            cache.kill(cache_subscripts)
-        except Exception:
-            pass
 
 
 def _execute_iris_vector_operation(
@@ -359,28 +376,18 @@ def _execute_iris_vector_operation(
     *,
     returns_vector: bool,
 ):
-    try:
-        import iris as _iris
-
-        gref = getattr(_iris, "gref")
-        execute = getattr(_iris, "execute")
-    except Exception as exc:
-        raise RuntimeError(
-            "IRISVector operations require iris.gref and iris.execute"
-        ) from exc
-
     cache_key = uuid4().hex
-    cache = gref("^CacheTemp")
-    cache_subscripts = _vector_cache_subscripts(cache_key)
-    root = _vector_cache_root(cache_key)
-    left_values_ref = _vector_value_ref(root, "left", "values")
-    left_dtype_ref = _vector_value_ref(root, "left", "dtype")
-    right_values_ref = _vector_value_ref(root, "right", "values")
-    right_dtype_ref = _vector_value_ref(root, "right", "dtype")
-    scalar_ref = _vector_value_ref(root, "right", "scalar")
-    out_ref = _vector_value_ref(root, "out")
-
-    try:
+    with _temporary_vector_cache(
+        cache_key,
+        _VECTOR_OPERATION_CACHE_GLOBAL,
+        "IRISVector operations require embedded runtime iris.gref and iris.execute",
+    ) as (cache, cache_subscripts, root, execute):
+        left_values_ref = _vector_value_ref(root, "left", "values")
+        left_dtype_ref = _vector_value_ref(root, "left", "dtype")
+        right_values_ref = _vector_value_ref(root, "right", "values")
+        right_dtype_ref = _vector_value_ref(root, "right", "dtype")
+        scalar_ref = _vector_value_ref(root, "right", "scalar")
+        out_ref = _vector_value_ref(root, "out")
         cache.set(cache_subscripts + ["left", "values"], left.to_param())
         cache.set(cache_subscripts + ["left", "dtype"], left._objectscript_dtype)
         execute(_build_iris_vector_script("a", left_values_ref, left_dtype_ref))
@@ -415,8 +422,3 @@ def _execute_iris_vector_operation(
         if returns_vector:
             return IRISVector(result, dtype=left.dtype)
         return result
-    finally:
-        try:
-            cache.kill(cache_subscripts)
-        except Exception:
-            pass

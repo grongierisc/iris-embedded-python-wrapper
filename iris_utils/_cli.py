@@ -3,11 +3,18 @@ import sys
 import argparse
 import hashlib
 import shutil
+import subprocess
 from dataclasses import dataclass
 from typing import Optional, Dict, List
 from pathlib import Path
 
 from ._find_libpython import find_libpython, is_windows, logger
+
+_PYTHON_CONFIG_KEYS = {
+    "runtime": "PythonRuntimeLibrary",
+    "path": "PythonPath",
+    "version": "PythonRuntimeLibraryVersion",
+}
 
 @dataclass
 class IrisVersion:
@@ -64,20 +71,37 @@ class IrisConfigManager:
         return installdir
     
     def _get_iris_instance_name(self) -> str:
-        iris_all = os.popen("iris all").read()
+        iris_all = self._run_iris_command("all")
         for line in iris_all.split("\n"):
             if self.installdir in line:
-                try:
-                    return line.split(">")[1].split()[0]
-                except IndexError:
-                    ## add for IRIS 2024.3 +
-                    return line.split("  ")[1].split()[0]
+                after_marker = line.partition(">")[2].split()
+                if after_marker:
+                    return after_marker[0]
+
+                # IRIS 2024.3+ no longer includes the `>` marker.
+                fields = [field.split() for field in line.split("  ") if field.strip()]
+                if len(fields) > 1 and fields[1]:
+                    return fields[1][0]
         raise RuntimeError("Could not determine IRIS instance name")
+
+    @staticmethod
+    def _run_iris_command(*args: str) -> str:
+        try:
+            result = subprocess.run(
+                ["iris", *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            command = " ".join(("iris", *args))
+            raise RuntimeError(f"IRIS command failed: {command}") from exc
+        return result.stdout
     
     def _merge_cpf_to_iris(self):
         instance_name = self._get_iris_instance_name()
         merge_file = f"{self.cpf_path}.{self._merge_cpf_suffix}"
-        os.system(f"iris merge {instance_name} {merge_file}")
+        self._run_iris_command("merge", instance_name, merge_file)
 
     def _get_iris_version(self) -> IrisVersion:
         version_str = self._read_iris_version()
@@ -212,36 +236,31 @@ class IrisConfigManager:
                 offset += 1
 
     def _find_action_keys(self, lines: List[str], offset: int) -> Dict[str, int]:
-        keys = {}
-        for i, line in enumerate(lines):
-            if line.startswith("ModifyConfig:PythonRuntimeLibrary="):
-                keys['runtime'] = i + offset
-            elif line.startswith("ModifyConfig:PythonPath="):
-                keys['path'] = i + offset
-            elif line.startswith("ModifyConfig:PythonRuntimeLibraryVersion="):
-                keys['version'] = i + offset
-        return keys
+        return self._find_python_config_keys(lines, offset, prefix="ModifyConfig:")
 
     def _find_config_keys(self, lines: List[str], offset: int) -> Dict[str, int]:
+        return self._find_python_config_keys(lines, offset)
+
+    @staticmethod
+    def _find_python_config_keys(
+        lines: List[str], offset: int = 0, prefix: str = ""
+    ) -> Dict[str, int]:
         keys = {}
         for i, line in enumerate(lines):
-            if line.startswith("PythonRuntimeLibrary="):
-                keys['runtime'] = i + offset
-            elif line.startswith("PythonPath="):
-                keys['path'] = i + offset
-            elif line.startswith("PythonRuntimeLibraryVersion="):
-                keys['version'] = i + offset
+            for key, setting in _PYTHON_CONFIG_KEYS.items():
+                if line.startswith(f"{prefix}{setting}="):
+                    keys[key] = i + offset
+                    break
         return keys
 
     def _get_config_keys_values(self, lines: List[str]) -> Dict[str, str]:
         keys = {}
-        for _, line in enumerate(lines):
-            if line.startswith("PythonRuntimeLibrary="):
-                keys['runtime'] = line.split("=")[1].strip()
-            elif line.startswith("PythonPath="):
-                keys['path'] = line.split("=")[1].strip()
-            elif line.startswith("PythonRuntimeLibraryVersion="):
-                keys['version'] = line.split("=")[1].strip()
+        for line in lines:
+            for key, setting in _PYTHON_CONFIG_KEYS.items():
+                marker = f"{setting}="
+                if line.startswith(marker):
+                    keys[key] = line[len(marker):].strip()
+                    break
         return keys
 
     def _validate_config_keys(self, config_keys: Dict[str, int]):

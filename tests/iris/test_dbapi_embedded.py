@@ -10,7 +10,6 @@ import types
 
 from tests.iris._dbapi_fakes import (
     FakeStatement,
-    FakeStatementAttrOnly,
     FakeStatementFactory,
     FakeStatementGetDataOnly,
     FakeStatementNoColumnCount,
@@ -198,57 +197,6 @@ def test_statement_result_iterator_handles_known_column_counts(
 
 
 @pytest.mark.parametrize(
-    ("sql", "expected"),
-    [
-        ("SELECT demo.id, name FROM Demo", ["id", "name"]),
-        (
-            "SELECT COALESCE(a, b) AS value, demo.name FROM Demo",
-            ["value", "name"],
-        ),
-        (
-            "SELECT 'from, inside' AS \"display value\", "
-            "[schema].[column] FROM Demo",
-            ["display value", "column"],
-        ),
-        (
-            "SELECT (SELECT MAX(x) FROM Other) AS result, Demo.id FROM Demo",
-            ["result", "id"],
-        ),
-        (
-            "SELECT value /* comma, from */ AS result, -- ignored, from\n"
-            "Demo.id FROM Demo",
-            ["result", "id"],
-        ),
-        (
-            "SELECT [Demo.Table].[Column.Name], `odd,name` AS `alias` FROM Demo",
-            ["Column.Name", "alias"],
-        ),
-    ],
-)
-def test_parse_select_projection_handles_sql_structure(sql, expected):
-    assert embedded_dbapi._EmbeddedCursor._parse_select_projection(sql) == expected
-
-
-@pytest.mark.parametrize(
-    "sql",
-    [
-        "UPDATE Demo SET value=1",
-        "SELECT COALESCE(a, b) FROM Demo",
-        "SELECT value implicit_alias FROM Demo",
-        "SELECT 'unclosed AS value FROM Demo",
-        "SELECT value /* unclosed FROM Demo",
-        "SELECT func(value AS result FROM Demo",
-        "SELECT value,,other FROM Demo",
-        "SELECT * FROM Demo",
-        "SELECT AS alias FROM Demo",
-        "SELECT value AS first AS second FROM Demo",
-    ],
-)
-def test_parse_select_projection_declines_ambiguous_sql(sql):
-    assert embedded_dbapi._EmbeddedCursor._parse_select_projection(sql) is None
-
-
-@pytest.mark.parametrize(
     ("client_type", "raw_value", "expected"),
     [
         (embedded_dbapi._CLIENT_TYPE_BINARY, "binary", b"binary"),
@@ -283,40 +231,21 @@ def test_vector_expression_metadata_uses_named_bridge_constants():
     assert not embedded_dbapi._is_potential_vector_expression_column(column)
 
 
-def test_named_result_access_preserves_the_bridge_exception():
+def test_positional_result_access_preserves_the_bridge_exception():
     class Result:
         def _Next(self):
             return True
 
-        def __getattr__(self, name):
-            raise RuntimeError(f"cannot read {name}")
+        def _GetData(self, index):
+            raise RuntimeError(f"cannot read {index}")
 
-    iterator = embedded_dbapi._StatementResultIterator(
-        Result(), projected_columns=["value"]
-    )
+    iterator = embedded_dbapi._StatementResultIterator(Result())
 
     with pytest.raises(embedded_dbapi.InterfaceError) as excinfo:
         next(iterator)
 
     assert isinstance(excinfo.value.__cause__, RuntimeError)
     assert "cannot read" in str(excinfo.value.__cause__)
-
-
-def test_selected_named_result_strategy_does_not_hide_conversion_errors(monkeypatch):
-    result = types.SimpleNamespace(value="raw")
-    iterator = embedded_dbapi._StatementResultIterator(
-        result, projected_columns=["value"]
-    )
-
-    def fail_conversion(value):
-        raise ValueError(f"cannot convert {value}")
-
-    monkeypatch.setattr(
-        embedded_dbapi, "_normalize_embedded_result_value", fail_conversion
-    )
-
-    with pytest.raises(ValueError, match="cannot convert raw"):
-        iterator._read_named_cell("value")
 
 
 def test_public_byref_helper(monkeypatch):
@@ -1151,32 +1080,6 @@ def test_dbapi_embedded_falls_back_to_getdata_accessor(monkeypatch):
     cur.execute("select 1")
 
     assert cur.fetchone() == (7, "gd")
-
-
-def test_dbapi_embedded_falls_back_to_projection_attributes(monkeypatch):
-    fake_statement = FakeStatementAttrOnly([(9,)], ["result"])
-
-    def fake_cls(name):
-        assert name == "%SQL.Statement"
-        return FakeStatementFactory(fake_statement)
-
-    monkeypatch.setattr(_iris_ep, "cls", fake_cls, raising=False)
-    monkeypatch.setattr(
-        _iris_ep.dbapi._runtime_manager,
-        "get",
-        lambda: types.SimpleNamespace(
-            mode="auto",
-            embedded_available=True,
-            state="embedded-local",
-            dbapi=None,
-        ),
-    )
-
-    conn = iris.dbapi.connect()
-    cur = conn.cursor()
-    cur.execute("SELECT 1 AS result")
-
-    assert cur.fetchone() == (9,)
 
 
 def test_dbapi_embedded_mode_accepts_embedded_local(monkeypatch):

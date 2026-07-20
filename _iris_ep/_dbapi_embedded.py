@@ -517,7 +517,6 @@ def _get_result_column_count(result: Any) -> Optional[int]:
 def _get_result_description(
     result: Any,
     column_count: int,
-    fallback_names: Optional[list[str]] = None,
 ):
     names: list[str] = []
 
@@ -536,9 +535,7 @@ def _get_result_description(
         names = []
 
     if len(names) != column_count:
-        names = list(fallback_names or [])
-        if len(names) != column_count:
-            names = [str(index) for index in range(1, column_count + 1)]
+        names = [str(index) for index in range(1, column_count + 1)]
 
     return tuple((name, None, None, None, None, None, None) for name in names)
 
@@ -732,214 +729,16 @@ def _get_result_processors(
     return tuple(processors)
 
 
-def _consume_sql_quoted_token(sql: str, start: int) -> Optional[int]:
-    """Return the index after a quoted SQL token, or None when unclosed."""
-    opener = sql[start]
-    closer = "]" if opener == "[" else opener
-    index = start + 1
-    while index < len(sql):
-        if sql[index] != closer:
-            index += 1
-            continue
-        if index + 1 < len(sql) and sql[index + 1] == closer:
-            index += 2
-            continue
-        return index + 1
-    return None
-
-
-def _is_sql_word_char(char: str) -> bool:
-    return char.isalnum() or char in "_$%"
-
-
-def _sql_keyword_at(sql: str, index: int, keyword: str) -> bool:
-    end = index + len(keyword)
-    if sql[index:end].lower() != keyword:
-        return False
-    before = sql[index - 1] if index > 0 else ""
-    after = sql[end] if end < len(sql) else ""
-    return not (before and _is_sql_word_char(before)) and not (
-        after and _is_sql_word_char(after)
-    )
-
-
-def _split_select_items(operation: str) -> Optional[list[str]]:
-    sql = operation.strip()
-    if not _sql_keyword_at(sql, 0, "select"):
-        return None
-
-    items: list[str] = []
-    current: list[str] = []
-    depth = 0
-    index = len("select")
-    while index < len(sql):
-        char = sql[index]
-
-        if char in "'\"`[":
-            end = _consume_sql_quoted_token(sql, index)
-            if end is None:
-                return None
-            current.append(sql[index:end])
-            index = end
-            continue
-
-        if sql.startswith("--", index):
-            end = sql.find("\n", index + 2)
-            index = len(sql) if end == -1 else end + 1
-            current.append(" ")
-            continue
-
-        if sql.startswith("/*", index):
-            end = sql.find("*/", index + 2)
-            if end == -1:
-                return None
-            current.append(" ")
-            index = end + 2
-            continue
-
-        if char == "(":
-            depth += 1
-        elif char == ")":
-            if depth == 0:
-                return None
-            depth -= 1
-        elif depth == 0 and char == ",":
-            item = "".join(current).strip()
-            if not item:
-                return None
-            items.append(item)
-            current = []
-            index += 1
-            continue
-        elif depth == 0 and _sql_keyword_at(sql, index, "from"):
-            item = "".join(current).strip()
-            if not item:
-                return None
-            items.append(item)
-            return items
-
-        current.append(char)
-        index += 1
-
-    if depth != 0:
-        return None
-    item = "".join(current).strip()
-    if not item:
-        return None
-    items.append(item)
-    return items
-
-
-def _find_top_level_sql_keyword(sql: str, keyword: str) -> Optional[int]:
-    found = None
-    depth = 0
-    index = 0
-    while index < len(sql):
-        char = sql[index]
-        if char in "'\"`[":
-            end = _consume_sql_quoted_token(sql, index)
-            if end is None:
-                return None
-            index = end
-            continue
-        if char == "(":
-            depth += 1
-        elif char == ")":
-            if depth == 0:
-                return None
-            depth -= 1
-        elif depth == 0 and _sql_keyword_at(sql, index, keyword):
-            if found is not None:
-                return None
-            found = index
-            index += len(keyword)
-            continue
-        index += 1
-    return found if depth == 0 else None
-
-
-def _decode_sql_identifier(token: str) -> Optional[str]:
-    token = token.strip()
-    if not token:
-        return None
-    if token[0] in '\"`[':
-        closer = "]" if token[0] == "[" else token[0]
-        end = _consume_sql_quoted_token(token, 0)
-        if end != len(token) or token[-1] != closer:
-            return None
-        return token[1:-1].replace(closer * 2, closer)
-    if token[0].isdigit() or any(not _is_sql_word_char(char) for char in token):
-        return None
-    return token
-
-
-def _bare_projection_name(item: str) -> Optional[str]:
-    parts: list[str] = []
-    current: list[str] = []
-    index = 0
-    while index < len(item):
-        char = item[index]
-        if char == "'":
-            return None
-        if char in '\"`[':
-            end = _consume_sql_quoted_token(item, index)
-            if end is None:
-                return None
-            current.append(item[index:end])
-            index = end
-            continue
-        if char == ".":
-            part = _decode_sql_identifier("".join(current))
-            if part is None:
-                return None
-            parts.append(part)
-            current = []
-            index += 1
-            continue
-        if char.isspace() or char in "(),*+-/":
-            return None
-        current.append(char)
-        index += 1
-
-    part = _decode_sql_identifier("".join(current))
-    if part is None:
-        return None
-    parts.append(part)
-    return parts[-1]
-
-
-def _parse_select_projection_names(operation: str) -> Optional[list[str]]:
-    items = _split_select_items(operation)
-    if not items:
-        return None
-
-    columns: list[str] = []
-    for item in items:
-        as_position = _find_top_level_sql_keyword(item, "as")
-        if as_position is None:
-            name = _bare_projection_name(item)
-        else:
-            if not item[:as_position].strip():
-                return None
-            name = _decode_sql_identifier(item[as_position + len("as") :])
-        if name is None:
-            return None
-        columns.append(name)
-    return columns
-
-
 class _StatementResultIterator:
     def __init__(
         self,
         statement_result: Any,
         column_count: Optional[int] = None,
-        projected_columns: Optional[list[str]] = None,
         processors: Optional[tuple[Callable[[Any], Any], ...]] = None,
         vector_column_indices: Optional[tuple[int, ...]] = None,
     ):
         self._statement_result = statement_result
         self._column_count = column_count
-        self._projected_columns = projected_columns or []
         self._processors = processors
         self._vector_column_indices = vector_column_indices or ()
         self._vector_cache_key = uuid4().hex if self._vector_column_indices else ""
@@ -954,18 +753,6 @@ class _StatementResultIterator:
         # calling getattr(obj, '_GetData') overwrites it and makes any previously
         # returned _Next bound-method raise "Method not found". Always access
         # methods via fresh attribute lookup on self._statement_result.
-
-    def _read_named_cell(self, name: str):
-        first_exc: Optional[Exception] = None
-        for candidate in (name, name.upper(), name.lower()):
-            try:
-                value = getattr(self._statement_result, candidate)
-            except Exception as exc:
-                if first_exc is None:
-                    first_exc = exc
-                continue
-            return _normalize_embedded_result_value(value)
-        raise InterfaceError("Unsupported %SQL.Statement result object") from first_exc
 
     def _read_cell(self, index: int):
         # %GetData(n) is the documented positional accessor for Dynamic SQL.
@@ -1040,9 +827,6 @@ class _StatementResultIterator:
             for i in self._column_indices:
                 row.append(_normalize_embedded_result_value(sr._GetData(i)))
             return tuple(row)
-
-        if self._projected_columns:
-            return tuple(self._read_named_cell(name) for name in self._projected_columns)
 
         # Fallback: slow path for unusual result objects.
         try:
@@ -1227,10 +1011,9 @@ class _EmbeddedCursor:
         self.lastrowid = None
         self._result_iter = None
         self._closed = False
-        # Caches keyed by SQL string — avoids _New()/_Prepare(), projection parsing,
-        # and _ResultColumnCount probing on repeated execute() calls.
+        # Caches keyed by SQL string avoid repeated statement preparation and
+        # metadata probing on repeated execute() calls.
         self._statement_cache: dict[str, Any] = {}
-        self._projection_cache: dict[str, Optional[list[str]]] = {}
         self._column_count_cache: dict[str, int] = {}
         self._processor_cache: dict[str, Optional[tuple[Callable[[Any], Any], ...]]] = {}
         self._description_cache: dict[str, Any] = {}
@@ -1257,7 +1040,6 @@ class _EmbeddedCursor:
         self._closed = True
         self._result_iter = None
         self._statement_cache.clear()
-        self._projection_cache.clear()
         self._column_count_cache.clear()
         self._processor_cache.clear()
         self._description_cache.clear()
@@ -1308,10 +1090,6 @@ class _EmbeddedCursor:
             self._result_iter = None
             return self
 
-        if operation not in self._projection_cache:
-            self._projection_cache[operation] = self._parse_select_projection(operation)
-        projected_columns = self._projection_cache[operation]
-
         known_col_count = self._column_count_cache.get(operation)
         if known_col_count is None:
             known_col_count = _get_result_column_count(result)
@@ -1326,7 +1104,6 @@ class _EmbeddedCursor:
         )
         result_iter = self._make_statement_result_iter(
             result,
-            projected_columns,
             known_col_count,
             cached_processors,
             cached_vector_columns,
@@ -1334,7 +1111,6 @@ class _EmbeddedCursor:
         if result_iter is None:
             raise InterfaceError("Unsupported %SQL.Statement result object")
 
-        # Persist column count from projected_columns on first execution.
         if known_col_count is None and isinstance(result_iter, _StatementResultIterator):
             if result_iter._column_count is not None:
                 known_col_count = result_iter._column_count
@@ -1358,9 +1134,7 @@ class _EmbeddedCursor:
             if operation in self._description_cache:
                 self.description = self._description_cache[operation]
             else:
-                self.description = _get_result_description(
-                    result, known_col_count, projected_columns
-                )
+                self.description = _get_result_description(result, known_col_count)
                 self._description_cache[operation] = self.description
         else:
             self.description = None
@@ -1487,13 +1261,8 @@ class _EmbeddedCursor:
             raise OperationalError(str(exc)) from exc
 
     @staticmethod
-    def _parse_select_projection(operation: str) -> Optional[list[str]]:
-        return _parse_select_projection_names(operation)
-
-    @staticmethod
     def _make_statement_result_iter(
         result: Any,
-        projected_columns: Optional[list[str]] = None,
         known_col_count: Optional[int] = None,
         processors: Optional[tuple[Callable[[Any], Any], ...]] = None,
         vector_column_indices: Optional[tuple[int, ...]] = None,
@@ -1508,7 +1277,6 @@ class _EmbeddedCursor:
                 _StatementResultIterator(
                     result,
                     column_count=known_col_count,
-                    projected_columns=projected_columns,
                     processors=processors,
                     vector_column_indices=vector_column_indices,
                 )
@@ -1536,16 +1304,10 @@ class _EmbeddedCursor:
             except Exception:
                 column_count = None
 
-        if column_count is None and projected_columns:
-            getter = getattr(result, "_GetData", None)
-            if callable(getter):
-                column_count = len(projected_columns)
-
         return iter(
             _StatementResultIterator(
                 result,
                 column_count=column_count,
-                projected_columns=projected_columns,
                 processors=(
                     _get_result_processors(result, column_count)
                     if column_count is not None and column_count > 0

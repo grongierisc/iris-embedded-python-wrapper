@@ -15,12 +15,12 @@ from ._list import IRISList
 
 _logger = logging.getLogger(__name__)
 
-_WRAPPER_EXPORTS = {
-    "_runtime",
+_PUBLIC_EXPORTS = (
     "runtime",
     "dbapi",
     "cls",
     "connect",
+    "system",
     "execute",
     "gref",
     "ref",
@@ -29,7 +29,9 @@ _WRAPPER_EXPORTS = {
     "IRISList",
     "IRISVector",
     "Vector",
-}
+)
+_PUBLIC_MODULE_NAMES = ("iris", "iris_ep", "iris_embedded_python")
+_WRAPPER_EXPORTS = {"_runtime", *_PUBLIC_EXPORTS}
 _NATIVE_CONNECT_KWARGS = {
     "hostname",
     "host",
@@ -331,20 +333,9 @@ class RuntimeFacade:
                 if not name.startswith("_")
             ]
 
-        for name in (
-            "runtime",
-            "dbapi",
-            "cls",
-            "connect",
-            "execute",
-            "gref",
-            "ref",
-            "ByRef",
-            "make_ref",
-            "IRISList",
-            "IRISVector",
-            "Vector",
-        ):
+        for name in _PUBLIC_EXPORTS:
+            if name == "system" and name not in self.module_globals:
+                continue
             if name not in exported_names:
                 exported_names.append(name)
 
@@ -398,25 +389,9 @@ class RuntimeFacade:
         exported_names = self.module_globals.get("__all__")
         if isinstance(exported_names, (list, tuple, set)):
             public_names.update(str(name) for name in exported_names)
-        public_names.update(
-            (
-                "runtime",
-                "dbapi",
-                "cls",
-                "connect",
-                "system",
-                "execute",
-                "gref",
-                "ref",
-                "ByRef",
-                "make_ref",
-                "IRISList",
-                "IRISVector",
-                "Vector",
-            )
-        )
+        public_names.update(_PUBLIC_EXPORTS)
 
-        for module_name in ("iris", "iris_ep", "iris_embedded_python"):
+        for module_name in _PUBLIC_MODULE_NAMES:
             module = sys.modules.get(module_name)
             if module is None:
                 continue
