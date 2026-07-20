@@ -74,6 +74,39 @@ def test_runtime_embedded_mode_requires_embedded_backend():
     iris.runtime.reset()
 
 
+@pytest.mark.parametrize(
+    "backend_error",
+    [
+        ImportError("IRIS_NOT_RUNNING (-18)"),
+        OSError("could not load pythonint"),
+        ModuleNotFoundError("pythonint"),
+    ],
+)
+def test_required_embedded_backend_normalizes_loader_errors(
+    monkeypatch, backend_error
+):
+    iris.runtime.reset()
+    iris.runtime.configure(mode="embedded", install_dir=None)
+    monkeypatch.setattr(_iris_ep._bootstrap, "is_embedded_kernel", lambda: True)
+
+    def fail_import():
+        raise backend_error
+
+    monkeypatch.setattr(
+        _iris_ep._bootstrap, "import_embedded_kernel_module", fail_import
+    )
+
+    try:
+        with pytest.raises(
+            RuntimeError, match="Embedded Python backend could not be loaded"
+        ) as excinfo:
+            iris.cls("User.Bar")
+
+        assert excinfo.value.__cause__ is backend_error
+    finally:
+        iris.runtime.reset()
+
+
 def test_runtime_reconfigure_clears_native_handles():
     iris.runtime.reset()
 

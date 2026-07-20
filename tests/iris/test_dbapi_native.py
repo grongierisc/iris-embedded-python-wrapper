@@ -3,6 +3,7 @@ import _iris_ep._dbapi as embedded_dbapi
 import _iris_ep._dbapi_native as native_dbapi_loader
 import pytest
 import sys
+import threading
 import types
 
 
@@ -166,6 +167,70 @@ def test_dbapi_native_distribution_import_failure_restores_iris_modules(monkeypa
     assert sys.modules["iris.existing"] is existing_submodule
     assert "iris.dbapi" not in sys.modules
     assert "iris.dbapi.partial" not in sys.modules
+
+
+def test_dbapi_native_module_isolation_supports_nested_use(monkeypatch):
+    facade = types.ModuleType("iris")
+    existing_submodule = types.ModuleType("iris.existing")
+    monkeypatch.setitem(sys.modules, "iris", facade)
+    monkeypatch.setitem(sys.modules, "iris.existing", existing_submodule)
+
+    with native_dbapi_loader._isolated_iris_modules():
+        assert "iris" not in sys.modules
+        temporary = types.ModuleType("iris")
+        sys.modules["iris"] = temporary
+
+        with native_dbapi_loader._isolated_iris_modules():
+            assert "iris" not in sys.modules
+
+        assert sys.modules["iris"] is temporary
+
+    assert sys.modules["iris"] is facade
+    assert sys.modules["iris.existing"] is existing_submodule
+
+
+def test_dbapi_native_module_isolation_serializes_threads(monkeypatch):
+    facade = types.ModuleType("iris")
+    monkeypatch.setitem(sys.modules, "iris", facade)
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_entered = threading.Event()
+    failures = []
+
+    def first_worker():
+        try:
+            with native_dbapi_loader._isolated_iris_modules():
+                first_entered.set()
+                if not release_first.wait(timeout=2):
+                    raise AssertionError("timed out waiting to release isolation")
+        except Exception as exc:
+            failures.append(exc)
+
+    def second_worker():
+        try:
+            if not first_entered.wait(timeout=2):
+                raise AssertionError("first isolation did not start")
+            with native_dbapi_loader._isolated_iris_modules():
+                second_entered.set()
+        except Exception as exc:
+            failures.append(exc)
+
+    first = threading.Thread(target=first_worker)
+    second = threading.Thread(target=second_worker)
+    first.start()
+    assert first_entered.wait(timeout=2)
+    second.start()
+
+    assert not second_entered.wait(timeout=0.1)
+    release_first.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert failures == []
+    assert second_entered.is_set()
+    assert sys.modules["iris"] is facade
 
 
 def test_dbapi_native_errors_when_official_module_missing(monkeypatch):

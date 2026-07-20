@@ -457,9 +457,13 @@ class RuntimeFacade:
                     warn_loader_path=required,
                 )
                 module = _bootstrap.import_pythonint_module()
-        except Exception:
+        except Exception as exc:
             if required:
-                raise
+                if isinstance(exc, RuntimeError):
+                    raise
+                raise RuntimeError(
+                    f"Embedded Python backend could not be loaded: {exc}"
+                ) from exc
             return current_runtime
 
         self.install_embedded_module(module)

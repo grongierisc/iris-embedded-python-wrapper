@@ -164,6 +164,161 @@ class FakeVectorStatement(FakeStatement):
         return FakeVectorStatementResult(self.rows, self.columns)
 
 
+@pytest.mark.parametrize("column_count", [1, 5, 7])
+@pytest.mark.parametrize("with_processors", [False, True])
+def test_statement_result_iterator_handles_known_column_counts(
+    column_count, with_processors
+):
+    class Result:
+        def __init__(self):
+            self.data_calls = []
+
+        def _Next(self):
+            return True
+
+        def _GetData(self, index):
+            self.data_calls.append(index)
+            return index
+
+    result = Result()
+    processors = None
+    if with_processors:
+        processors = tuple(lambda value: value + 100 for _ in range(column_count))
+    iterator = embedded_dbapi._StatementResultIterator(
+        result,
+        column_count=column_count,
+        processors=processors,
+    )
+
+    offset = 100 if with_processors else 0
+    assert next(iterator) == tuple(
+        index + offset for index in range(1, column_count + 1)
+    )
+    assert result.data_calls == list(range(1, column_count + 1))
+
+
+@pytest.mark.parametrize(
+    ("sql", "expected"),
+    [
+        ("SELECT demo.id, name FROM Demo", ["id", "name"]),
+        (
+            "SELECT COALESCE(a, b) AS value, demo.name FROM Demo",
+            ["value", "name"],
+        ),
+        (
+            "SELECT 'from, inside' AS \"display value\", "
+            "[schema].[column] FROM Demo",
+            ["display value", "column"],
+        ),
+        (
+            "SELECT (SELECT MAX(x) FROM Other) AS result, Demo.id FROM Demo",
+            ["result", "id"],
+        ),
+        (
+            "SELECT value /* comma, from */ AS result, -- ignored, from\n"
+            "Demo.id FROM Demo",
+            ["result", "id"],
+        ),
+        (
+            "SELECT [Demo.Table].[Column.Name], `odd,name` AS `alias` FROM Demo",
+            ["Column.Name", "alias"],
+        ),
+    ],
+)
+def test_parse_select_projection_handles_sql_structure(sql, expected):
+    assert embedded_dbapi._EmbeddedCursor._parse_select_projection(sql) == expected
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "UPDATE Demo SET value=1",
+        "SELECT COALESCE(a, b) FROM Demo",
+        "SELECT value implicit_alias FROM Demo",
+        "SELECT 'unclosed AS value FROM Demo",
+        "SELECT value /* unclosed FROM Demo",
+        "SELECT func(value AS result FROM Demo",
+        "SELECT value,,other FROM Demo",
+        "SELECT * FROM Demo",
+        "SELECT AS alias FROM Demo",
+        "SELECT value AS first AS second FROM Demo",
+    ],
+)
+def test_parse_select_projection_declines_ambiguous_sql(sql):
+    assert embedded_dbapi._EmbeddedCursor._parse_select_projection(sql) is None
+
+
+@pytest.mark.parametrize(
+    ("client_type", "raw_value", "expected"),
+    [
+        (embedded_dbapi._CLIENT_TYPE_BINARY, "binary", b"binary"),
+        *[
+            (client_type, str(client_type), client_type)
+            for client_type in sorted(embedded_dbapi._CLIENT_TYPE_INTEGER)
+        ],
+        (embedded_dbapi._CLIENT_TYPE_TEXT, "text", "text"),
+        (embedded_dbapi._CLIENT_TYPE_DECIMAL, "1.25", Decimal("1.25")),
+    ],
+)
+def test_result_processor_client_type_constants(client_type, raw_value, expected):
+    column = FakeMetadataColumn("value", client_type=client_type)
+    result = types.SimpleNamespace(_GetMetadata=lambda: FakeMetadata([column]))
+
+    processor = embedded_dbapi._get_result_processors(result, 1)[0]
+
+    assert processor(raw_value) == expected
+
+
+def test_vector_expression_metadata_uses_named_bridge_constants():
+    column = FakeMetadataColumn(
+        "embedding",
+        client_type=embedded_dbapi._CLIENT_TYPE_TEXT,
+        is_expression=1,
+        precision=embedded_dbapi._VECTOR_EXPRESSION_PRECISION,
+    )
+
+    assert embedded_dbapi._is_potential_vector_expression_column(column)
+
+    column.precision -= 1
+    assert not embedded_dbapi._is_potential_vector_expression_column(column)
+
+
+def test_named_result_access_preserves_the_bridge_exception():
+    class Result:
+        def _Next(self):
+            return True
+
+        def __getattr__(self, name):
+            raise RuntimeError(f"cannot read {name}")
+
+    iterator = embedded_dbapi._StatementResultIterator(
+        Result(), projected_columns=["value"]
+    )
+
+    with pytest.raises(embedded_dbapi.InterfaceError) as excinfo:
+        next(iterator)
+
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert "cannot read" in str(excinfo.value.__cause__)
+
+
+def test_selected_named_result_strategy_does_not_hide_conversion_errors(monkeypatch):
+    result = types.SimpleNamespace(value="raw")
+    iterator = embedded_dbapi._StatementResultIterator(
+        result, projected_columns=["value"]
+    )
+
+    def fail_conversion(value):
+        raise ValueError(f"cannot convert {value}")
+
+    monkeypatch.setattr(
+        embedded_dbapi, "_normalize_embedded_result_value", fail_conversion
+    )
+
+    with pytest.raises(ValueError, match="cannot convert raw"):
+        iterator._read_named_cell("value")
+
+
 def test_public_byref_helper(monkeypatch):
     assert iris.ByRef is public_iris.ByRef
     assert not hasattr(iris.dbapi, "ByRef")

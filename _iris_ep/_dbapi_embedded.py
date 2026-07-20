@@ -46,6 +46,24 @@ _INTEGRITY_MESSAGE_MARKERS = (
     "constraint",
 )
 
+# Embedded %SQL.Statement metadata uses IRIS client type codes rather than
+# Python/DB-API type objects. Keep the observed bridge values named so result
+# conversion does not depend on unexplained numeric literals.
+_CLIENT_TYPE_BINARY = 1
+_CLIENT_TYPE_INTEGER = frozenset({5, 16, 18})
+_CLIENT_TYPE_TEXT = 10
+_CLIENT_TYPE_DECIMAL = 14
+_ODBC_TYPE_DECIMAL = frozenset({2, 3})
+_VECTOR_EXPRESSION_PRECISION = 64000
+
+_METADATA_OBJECT_ATTRIBUTES = ("property", "typeClass")
+_METADATA_TYPE_ATTRIBUTES = ("RuntimeType", "Type", "Name")
+_VECTOR_RUNTIME_TYPES = frozenset({"%Library.Vector"})
+_LIST_RUNTIME_TYPES = frozenset({"%Library.List", "%List"})
+_DECIMAL_RUNTIME_TYPES = frozenset(
+    {"%Library.Numeric", "%Numeric", "%Library.Decimal", "%Decimal"}
+)
+
 
 def _safe_getattr(value: Any, name: str, default: Any = None):
     try:
@@ -580,85 +598,47 @@ def _vector_result_processor(value: Any):
     return _normalize_embedded_result_value(value)
 
 
-def _is_vector_metadata_column(column: Any) -> bool:
-    for attr_name in ("property", "typeClass"):
-        try:
-            metadata_object = getattr(column, attr_name)
-        except Exception:
+def _metadata_column_matches(
+    column: Any,
+    runtime_types: frozenset[str],
+    sql_category: str,
+) -> bool:
+    """Probe the metadata layouts exposed by supported embedded bridges."""
+    for attr_name in _METADATA_OBJECT_ATTRIBUTES:
+        metadata_object = _safe_getattr(column, attr_name)
+        if metadata_object is None:
             continue
 
-        for type_attr in ("RuntimeType", "Type", "Name"):
-            try:
-                if getattr(metadata_object, type_attr) == "%Library.Vector":
-                    return True
-            except Exception:
-                pass
-
-        try:
-            if getattr(metadata_object, "SqlCategory") == "VECTOR":
+        for type_attr in _METADATA_TYPE_ATTRIBUTES:
+            if _safe_getattr(metadata_object, type_attr) in runtime_types:
                 return True
-        except Exception:
-            pass
+
+        if _safe_getattr(metadata_object, "SqlCategory") == sql_category:
+            return True
 
     return False
+
+
+def _is_vector_metadata_column(column: Any) -> bool:
+    return _metadata_column_matches(column, _VECTOR_RUNTIME_TYPES, "VECTOR")
 
 
 def _is_list_metadata_column(column: Any) -> bool:
-    for attr_name in ("property", "typeClass"):
-        try:
-            metadata_object = getattr(column, attr_name)
-        except Exception:
-            continue
-
-        for type_attr in ("RuntimeType", "Type", "Name"):
-            try:
-                if getattr(metadata_object, type_attr) in ("%Library.List", "%List"):
-                    return True
-            except Exception:
-                pass
-
-        try:
-            if getattr(metadata_object, "SqlCategory") == "LIST":
-                return True
-        except Exception:
-            pass
-
-    return False
+    return _metadata_column_matches(column, _LIST_RUNTIME_TYPES, "LIST")
 
 
 def _is_decimal_metadata_column(column: Any) -> bool:
-    for attr_name in ("property", "typeClass"):
-        try:
-            metadata_object = getattr(column, attr_name)
-        except Exception:
-            continue
-
-        for type_attr in ("RuntimeType", "Type", "Name"):
-            try:
-                if getattr(metadata_object, type_attr) in (
-                    "%Library.Numeric",
-                    "%Numeric",
-                    "%Library.Decimal",
-                    "%Decimal",
-                ):
-                    return True
-            except Exception:
-                pass
-
-        try:
-            if getattr(metadata_object, "SqlCategory") == "NUMERIC":
-                return True
-        except Exception:
-            pass
+    if _metadata_column_matches(column, _DECIMAL_RUNTIME_TYPES, "NUMERIC"):
+        return True
 
     try:
-        if int(getattr(column, "ODBCType")) in (2, 3):
+        if int(getattr(column, "ODBCType")) in _ODBC_TYPE_DECIMAL:
             return True
     except Exception:
         pass
 
     try:
-        return int(getattr(column, "clientType")) == 14
+        return int(getattr(column, "clientType")) == _CLIENT_TYPE_DECIMAL
     except Exception:
         return False
 
@@ -680,9 +660,9 @@ def _is_potential_vector_expression_column(column: Any) -> bool:
     try:
         if int(getattr(column, "isExpression")) != 1:
             return False
-        if int(getattr(column, "clientType")) != 10:
+        if int(getattr(column, "clientType")) != _CLIENT_TYPE_TEXT:
             return False
-        return int(getattr(column, "precision")) == 64000
+        return int(getattr(column, "precision")) == _VECTOR_EXPRESSION_PRECISION
     except Exception:
         return False
 
@@ -742,14 +722,210 @@ def _get_result_processors(
             processors.append(
                 lambda value, scale=scale: _decimal_result_processor(value, scale)
             )
-        elif client_type == 1:
+        elif client_type == _CLIENT_TYPE_BINARY:
             processors.append(_binary_result_processor)
-        elif client_type in (5, 16, 18):
+        elif client_type in _CLIENT_TYPE_INTEGER:
             processors.append(_integer_result_processor)
         else:
             processors.append(_normalize_embedded_result_value)
 
     return tuple(processors)
+
+
+def _consume_sql_quoted_token(sql: str, start: int) -> Optional[int]:
+    """Return the index after a quoted SQL token, or None when unclosed."""
+    opener = sql[start]
+    closer = "]" if opener == "[" else opener
+    index = start + 1
+    while index < len(sql):
+        if sql[index] != closer:
+            index += 1
+            continue
+        if index + 1 < len(sql) and sql[index + 1] == closer:
+            index += 2
+            continue
+        return index + 1
+    return None
+
+
+def _is_sql_word_char(char: str) -> bool:
+    return char.isalnum() or char in "_$%"
+
+
+def _sql_keyword_at(sql: str, index: int, keyword: str) -> bool:
+    end = index + len(keyword)
+    if sql[index:end].lower() != keyword:
+        return False
+    before = sql[index - 1] if index > 0 else ""
+    after = sql[end] if end < len(sql) else ""
+    return not (before and _is_sql_word_char(before)) and not (
+        after and _is_sql_word_char(after)
+    )
+
+
+def _split_select_items(operation: str) -> Optional[list[str]]:
+    sql = operation.strip()
+    if not _sql_keyword_at(sql, 0, "select"):
+        return None
+
+    items: list[str] = []
+    current: list[str] = []
+    depth = 0
+    index = len("select")
+    while index < len(sql):
+        char = sql[index]
+
+        if char in "'\"`[":
+            end = _consume_sql_quoted_token(sql, index)
+            if end is None:
+                return None
+            current.append(sql[index:end])
+            index = end
+            continue
+
+        if sql.startswith("--", index):
+            end = sql.find("\n", index + 2)
+            index = len(sql) if end == -1 else end + 1
+            current.append(" ")
+            continue
+
+        if sql.startswith("/*", index):
+            end = sql.find("*/", index + 2)
+            if end == -1:
+                return None
+            current.append(" ")
+            index = end + 2
+            continue
+
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            if depth == 0:
+                return None
+            depth -= 1
+        elif depth == 0 and char == ",":
+            item = "".join(current).strip()
+            if not item:
+                return None
+            items.append(item)
+            current = []
+            index += 1
+            continue
+        elif depth == 0 and _sql_keyword_at(sql, index, "from"):
+            item = "".join(current).strip()
+            if not item:
+                return None
+            items.append(item)
+            return items
+
+        current.append(char)
+        index += 1
+
+    if depth != 0:
+        return None
+    item = "".join(current).strip()
+    if not item:
+        return None
+    items.append(item)
+    return items
+
+
+def _find_top_level_sql_keyword(sql: str, keyword: str) -> Optional[int]:
+    found = None
+    depth = 0
+    index = 0
+    while index < len(sql):
+        char = sql[index]
+        if char in "'\"`[":
+            end = _consume_sql_quoted_token(sql, index)
+            if end is None:
+                return None
+            index = end
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            if depth == 0:
+                return None
+            depth -= 1
+        elif depth == 0 and _sql_keyword_at(sql, index, keyword):
+            if found is not None:
+                return None
+            found = index
+            index += len(keyword)
+            continue
+        index += 1
+    return found if depth == 0 else None
+
+
+def _decode_sql_identifier(token: str) -> Optional[str]:
+    token = token.strip()
+    if not token:
+        return None
+    if token[0] in '\"`[':
+        closer = "]" if token[0] == "[" else token[0]
+        end = _consume_sql_quoted_token(token, 0)
+        if end != len(token) or token[-1] != closer:
+            return None
+        return token[1:-1].replace(closer * 2, closer)
+    if token[0].isdigit() or any(not _is_sql_word_char(char) for char in token):
+        return None
+    return token
+
+
+def _bare_projection_name(item: str) -> Optional[str]:
+    parts: list[str] = []
+    current: list[str] = []
+    index = 0
+    while index < len(item):
+        char = item[index]
+        if char == "'":
+            return None
+        if char in '\"`[':
+            end = _consume_sql_quoted_token(item, index)
+            if end is None:
+                return None
+            current.append(item[index:end])
+            index = end
+            continue
+        if char == ".":
+            part = _decode_sql_identifier("".join(current))
+            if part is None:
+                return None
+            parts.append(part)
+            current = []
+            index += 1
+            continue
+        if char.isspace() or char in "(),*+-/":
+            return None
+        current.append(char)
+        index += 1
+
+    part = _decode_sql_identifier("".join(current))
+    if part is None:
+        return None
+    parts.append(part)
+    return parts[-1]
+
+
+def _parse_select_projection_names(operation: str) -> Optional[list[str]]:
+    items = _split_select_items(operation)
+    if not items:
+        return None
+
+    columns: list[str] = []
+    for item in items:
+        as_position = _find_top_level_sql_keyword(item, "as")
+        if as_position is None:
+            name = _bare_projection_name(item)
+        else:
+            if not item[:as_position].strip():
+                return None
+            name = _decode_sql_identifier(item[as_position + len("as") :])
+        if name is None:
+            return None
+        columns.append(name)
+    return columns
 
 
 class _StatementResultIterator:
@@ -780,12 +956,16 @@ class _StatementResultIterator:
         # methods via fresh attribute lookup on self._statement_result.
 
     def _read_named_cell(self, name: str):
+        first_exc: Optional[Exception] = None
         for candidate in (name, name.upper(), name.lower()):
             try:
-                return _normalize_embedded_result_value(getattr(self._statement_result, candidate))
-            except Exception:
+                value = getattr(self._statement_result, candidate)
+            except Exception as exc:
+                if first_exc is None:
+                    first_exc = exc
                 continue
-        raise InterfaceError("Unsupported %SQL.Statement result object")
+            return _normalize_embedded_result_value(value)
+        raise InterfaceError("Unsupported %SQL.Statement result object") from first_exc
 
     def _read_cell(self, index: int):
         # %GetData(n) is the documented positional accessor for Dynamic SQL.
@@ -850,38 +1030,19 @@ class _StatementResultIterator:
             if processors is not None:
                 if self._column_count == 1:
                     return (processors[0](sr._GetData(1)),)
-                if self._column_count == 5:
-                    return (
-                        processors[0](sr._GetData(1)),
-                        processors[1](sr._GetData(2)),
-                        processors[2](sr._GetData(3)),
-                        processors[3](sr._GetData(4)),
-                        processors[4](sr._GetData(5)),
-                    )
                 row = []
                 for i, processor in zip(self._column_indices, processors):
                     row.append(processor(sr._GetData(i)))
                 return tuple(row)
             if self._column_count == 1:
                 return (_normalize_embedded_result_value(sr._GetData(1)),)
-            if self._column_count == 5:
-                return (
-                    _normalize_embedded_result_value(sr._GetData(1)),
-                    _normalize_embedded_result_value(sr._GetData(2)),
-                    _normalize_embedded_result_value(sr._GetData(3)),
-                    _normalize_embedded_result_value(sr._GetData(4)),
-                    _normalize_embedded_result_value(sr._GetData(5)),
-                )
             row = []
             for i in self._column_indices:
                 row.append(_normalize_embedded_result_value(sr._GetData(i)))
             return tuple(row)
 
         if self._projected_columns:
-            try:
-                return tuple(self._read_named_cell(name) for name in self._projected_columns)
-            except Exception:
-                pass
+            return tuple(self._read_named_cell(name) for name in self._projected_columns)
 
         # Fallback: slow path for unusual result objects.
         try:
@@ -1327,35 +1488,7 @@ class _EmbeddedCursor:
 
     @staticmethod
     def _parse_select_projection(operation: str) -> Optional[list[str]]:
-        sql = operation.strip()
-        sql_lower = sql.lower()
-        if not sql_lower.startswith("select"):
-            return None
-
-        select_part = sql[6:]
-        from_pos = select_part.lower().find(" from ")
-        if from_pos != -1:
-            select_part = select_part[:from_pos]
-
-        columns = []
-        for raw_item in select_part.split(","):
-            item = raw_item.strip()
-            if not item:
-                continue
-
-            lower_item = item.lower()
-            if " as " in lower_item:
-                alias = item[lower_item.rfind(" as ") + 4 :].strip()
-                alias = alias.strip('"[]`')
-                if alias:
-                    columns.append(alias)
-            else:
-                # Bare column name (possibly table-qualified): strip qualifier and quotes.
-                bare = item.split(".")[-1].strip().strip('"[]`')
-                if bare and bare != "*":
-                    columns.append(bare)
-
-        return columns or None
+        return _parse_select_projection_names(operation)
 
     @staticmethod
     def _make_statement_result_iter(
@@ -1365,69 +1498,66 @@ class _EmbeddedCursor:
         processors: Optional[tuple[Callable[[Any], Any], ...]] = None,
         vector_column_indices: Optional[tuple[int, ...]] = None,
     ):
-        try:
-            # Fast path: column count already known — skip all probing.
-            if known_col_count is not None and known_col_count > 0:
-                if processors is None:
-                    processors = _get_result_processors(result, known_col_count)
-                if vector_column_indices is None:
-                    vector_column_indices = _get_vector_column_indices(result, known_col_count)
-                return iter(
-                    _StatementResultIterator(
-                        result,
-                        column_count=known_col_count,
-                        projected_columns=projected_columns,
-                        processors=processors,
-                        vector_column_indices=vector_column_indices,
-                    )
+        # Fast path: column count already known — skip all probing.
+        if known_col_count is not None and known_col_count > 0:
+            if processors is None:
+                processors = _get_result_processors(result, known_col_count)
+            if vector_column_indices is None:
+                vector_column_indices = _get_vector_column_indices(result, known_col_count)
+            return iter(
+                _StatementResultIterator(
+                    result,
+                    column_count=known_col_count,
+                    projected_columns=projected_columns,
+                    processors=processors,
+                    vector_column_indices=vector_column_indices,
                 )
+            )
 
-            try:
-                # Prefer runtime-provided iterator when available.
-                return (_normalize_embedded_result_row(row) for row in iter(result))
-            except Exception:
-                pass
+        try:
+            # Prefer runtime-provided iterator when available.
+            return (_normalize_embedded_result_row(row) for row in iter(result))
+        except Exception:
+            pass
 
-            column_count: Optional[int] = None
+        column_count: Optional[int] = None
+        try:
+            candidate = result._ResultColumnCount
+            if isinstance(candidate, int) and candidate > 0:
+                column_count = candidate
+        except Exception:
+            column_count = None
+
+        if column_count is None:
             try:
-                candidate = result._ResultColumnCount
+                candidate = result._GetColumnCount()
                 if isinstance(candidate, int) and candidate > 0:
                     column_count = candidate
             except Exception:
                 column_count = None
 
-            if column_count is None:
-                try:
-                    candidate = result._GetColumnCount()
-                    if isinstance(candidate, int) and candidate > 0:
-                        column_count = candidate
-                except Exception:
-                    column_count = None
+        if column_count is None and projected_columns:
+            getter = getattr(result, "_GetData", None)
+            if callable(getter):
+                column_count = len(projected_columns)
 
-            if column_count is None and projected_columns:
-                getter = getattr(result, "_GetData", None)
-                if callable(getter):
-                    column_count = len(projected_columns)
-
-            return iter(
-                _StatementResultIterator(
-                    result,
-                    column_count=column_count,
-                    projected_columns=projected_columns,
-                    processors=(
-                        _get_result_processors(result, column_count)
-                        if column_count is not None and column_count > 0
-                        else None
-                    ),
-                    vector_column_indices=(
-                        _get_vector_column_indices(result, column_count)
-                        if column_count is not None and column_count > 0
-                        else None
-                    ),
-                )
+        return iter(
+            _StatementResultIterator(
+                result,
+                column_count=column_count,
+                projected_columns=projected_columns,
+                processors=(
+                    _get_result_processors(result, column_count)
+                    if column_count is not None and column_count > 0
+                    else None
+                ),
+                vector_column_indices=(
+                    _get_vector_column_indices(result, column_count)
+                    if column_count is not None and column_count > 0
+                    else None
+                ),
             )
-        except Exception:
-            return None
+        )
 
     def fetchone(self):
         if self._result_iter is None:

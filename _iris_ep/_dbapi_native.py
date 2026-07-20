@@ -6,10 +6,12 @@ import importlib.util
 import sys
 from contextlib import contextmanager
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 
 _MISSING = object()
+_IRIS_MODULES_LOCK = RLock()
 
 
 def _is_iris_module_name(name: str) -> bool:
@@ -29,53 +31,56 @@ def _restore_iris_modules(saved_modules: dict[str, Any]) -> None:
 
 @contextmanager
 def _isolated_iris_modules():
-    saved_modules = _snapshot_iris_modules()
-    try:
-        for name in saved_modules:
-            sys.modules.pop(name, None)
-        yield
-    finally:
-        _restore_iris_modules(saved_modules)
+    with _IRIS_MODULES_LOCK:
+        saved_modules = _snapshot_iris_modules()
+        try:
+            for name in saved_modules:
+                sys.modules.pop(name, None)
+            yield
+        finally:
+            _restore_iris_modules(saved_modules)
 
 
 def import_native_dbapi():
-    saved_modules = _snapshot_iris_modules()
-    try:
-        return importlib.import_module("iris.dbapi")
-    except ImportError as first_exc:
-        _restore_iris_modules(saved_modules)
+    with _IRIS_MODULES_LOCK:
+        saved_modules = _snapshot_iris_modules()
         try:
-            return import_native_dbapi_from_distribution()
-        except ImportError:
-            raise first_exc
+            return importlib.import_module("iris.dbapi")
+        except ImportError as first_exc:
+            _restore_iris_modules(saved_modules)
+            try:
+                return import_native_dbapi_from_distribution()
+            except ImportError:
+                raise first_exc
 
 
 def import_native_dbapi_from_distribution():
-    saved_modules = _snapshot_iris_modules()
-    try:
-        distribution = importlib.metadata.distribution("intersystems-irispython")
-    except importlib.metadata.PackageNotFoundError as exc:
-        raise ImportError("intersystems-irispython is not installed") from exc
+    with _IRIS_MODULES_LOCK:
+        saved_modules = _snapshot_iris_modules()
+        try:
+            distribution = importlib.metadata.distribution("intersystems-irispython")
+        except importlib.metadata.PackageNotFoundError as exc:
+            raise ImportError("intersystems-irispython is not installed") from exc
 
-    package_init = Path(distribution.locate_file("iris/__init__.py"))
-    package_dir = package_init.parent
-    if not package_init.is_file():
-        raise ImportError("intersystems-irispython does not provide iris/__init__.py")
+        package_init = Path(distribution.locate_file("iris/__init__.py"))
+        package_dir = package_init.parent
+        if not package_init.is_file():
+            raise ImportError("intersystems-irispython does not provide iris/__init__.py")
 
-    try:
-        public_iris = sys.modules.get("iris", _MISSING)
-        official_iris = load_official_iris_package(package_init, package_dir)
+        try:
+            public_iris = sys.modules.get("iris", _MISSING)
+            official_iris = load_official_iris_package(package_init, package_dir)
 
-        if public_iris is _MISSING:
-            sys.modules["iris"] = official_iris
-        else:
-            attach_official_iris_sdk(public_iris, official_iris, package_dir)
-            sys.modules["iris"] = public_iris
+            if public_iris is _MISSING:
+                sys.modules["iris"] = official_iris
+            else:
+                attach_official_iris_sdk(public_iris, official_iris, package_dir)
+                sys.modules["iris"] = public_iris
 
-        return importlib.import_module("iris.dbapi")
-    except Exception:
-        _restore_iris_modules(saved_modules)
-        raise
+            return importlib.import_module("iris.dbapi")
+        except Exception:
+            _restore_iris_modules(saved_modules)
+            raise
 
 
 def load_official_iris_package(package_init: Path, package_dir: Path):
